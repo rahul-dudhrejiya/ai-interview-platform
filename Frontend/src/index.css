@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+/* ===== Design tokens =====
+   Palette:
+   --ink        #151B2B  deep navy-charcoal text
+   --paper      #F5F6F8  cool paper background
+   --surface    #FFFFFF  card surface
+   --border     #E4E6EE  hairline border
+   --indigo     #3B4FE0  primary accent (confidence / action)
+   --indigo-dk  #2C3BB8  primary accent hover
+   --gold       #E8A33D  spotlight accent (scores / highlights)
+   --green      #1E8A5F  success / high score
+   --red        #D64545  warning / low score
+*/
+
+:root {
+  --ink: #151b2b;
+  --paper: #f5f6f8;
+  --surface: #ffffff;
+  --border: #e4e6ee;
+  --indigo: #3b4fe0;
+  --indigo-dk: #2c3bb8;
+  --gold: #e8a33d;
+  --green: #1e8a5f;
+  --red: #d64545;
+
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* NEW (Feature: Dark Theme)
+   Same token names, dark values. Because every component reads colors
+   through these CSS variables (via inline style={{ color: "var(--ink)" }}
+   etc.) instead of hardcoded hex, flipping just these ~9 values re-themes
+   the ENTIRE app without editing every component individually. */
+.dark {
+  --ink: #e9eaf0;
+  --paper: #0b0e16;
+  --surface: #151a26;
+  --border: #262c3b;
+  --indigo: #7c8cf5;
+  --indigo-dk: #6675e8;
+  --gold: #f0b85c;
+  --green: #34b27b;
+  --red: #e5685f;
+  color-scheme: dark;
+}
+
+/* A handful of places still use Tailwind's `bg-white` utility class
+   directly (not the CSS variable) for card surfaces. Rather than hunting
+   down and editing every one of those across a dozen files, this single
+   rule re-points them at the themed surface color whenever dark mode is
+   active - same effect, far less risk of missing one. */
+.dark .bg-white {
+  background-color: var(--surface) !important;
+}
+
+/* NEW (bug fix): solid "emphasis" buttons - Start Interview, Next
+   Question, logo badges, close buttons - were using `var(--ink)` as
+   their BACKGROUND color. That's fine in light mode (--ink is dark
+   navy there), but in dark mode --ink flips to a LIGHT color (since
+   it's meant for readable body TEXT on a dark page) - so those same
+   buttons ended up with a light background + white text, nearly
+   invisible. `--emphasis` is a separate token that intentionally does
+   NOT change between themes, for exactly this "solid dark CTA" use case. */
+:root {
+  --emphasis: #151b2b;
+  /* NEW (bug fix): "muted panel" background - used for feedback boxes,
+     subtle card fills, AI subtitle overlays. Previously these were
+     hardcoded as "#FAFAFB"/"#F3F4F6" directly in components. That's fine
+     in light mode, but in dark mode the paired `color: var(--ink)` text
+     flips to a LIGHT color while this hardcoded background stayed
+     light too -> light text on a light box, nearly invisible. Making
+     this a proper theme-aware token fixes every instance at once. */
+  --surface-muted: #f7f8fa;
+}
+
+.dark {
+  --emphasis: #151b2b;
+  --surface-muted: #1b2130;
+}
+
+* {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Visible keyboard focus everywhere */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--indigo);
+  outline-offset: 2px;
+}
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* thin custom scrollbar for question-breakdown / history lists */
+.scroll-thin::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 999px;
+}
+
+/* signature radial focus-ring backdrop used behind the AI interviewer video */
+.focus-ring-bg {
+  background:
+    radial-gradient(circle at 50% 35%, rgba(59, 79, 224, 0.16), transparent 60%),
+    repeating-radial-gradient(circle at 50% 35%,
+      transparent 0,
+      transparent 78px,
+      rgba(21, 27, 43, 0.05) 79px,
+      transparent 80px);
+}

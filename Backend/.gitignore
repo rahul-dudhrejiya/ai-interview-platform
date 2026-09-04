@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Environment variables (contains secrets - NEVER commit this)
+.env
+.env.local
+
+# Uploaded files (resumes/JDs are temporary, shouldn't be in git)
+public/*
+!public/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

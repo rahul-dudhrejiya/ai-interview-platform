@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Environment variables (contains secrets - NEVER commit this)
+.env
+.env.local
+
+# NOTE: public/models/ is intentionally NOT ignored here - those are the
+# face-api.js model weight files (Feature: Webcam Confidence Detection).
+# They're required assets, not secrets or generated files, so they need
+# to actually be committed for the app to work after a fresh clone.
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
