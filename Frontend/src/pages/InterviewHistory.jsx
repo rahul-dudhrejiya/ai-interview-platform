@@ -8,9 +8,8 @@ import { FaArrowLeft, FaTrophy } from "react-icons/fa";
 import { HiSparkles } from "react-icons/hi";
 
 // BUG FIX: component name was lowercase `interviewHistory` — React treats
-// lowercase-named components as native HTML tags, not components, which
+// lowercase-named components as native HTML tags, not com`p`onents, which
 // would break rendering. Renamed to `InterviewHistory` (PascalCase) and
-// the filename should match: InterviewHistory.jsx.
 const InterviewHistory = () => {
   const [interviews, setInterviews] = useState([]);
   const [loading, setLoading] = useState(true);
