@@ -28,12 +28,23 @@ const Auth = ({ isModel = false }) => {
         { withCredentials: true }
       );
 
+      if (result.data?.token) {
+        localStorage.setItem("token", result.data.token);
+      }
+
       dispatch(setUserData(result.data));
       if (!isModel) {
         navigate("/");
       }
     } catch (error) {
-      console.log(error);
+      if (
+        error?.code === "auth/popup-closed-by-user" ||
+        error?.code === "auth/cancelled-popup-request"
+      ) {
+        console.info("Sign-in popup dismissed by candidate.");
+        return;
+      }
+      console.error("Sign-in failed:", error);
       dispatch(setUserData(null));
     }
   };

@@ -8,6 +8,16 @@ import { extractTextFromPDF } from "../utils/pdfExtract.js";
 // NEW (Feature: Email PDF Report)
 import { sendReportEmail } from "../services/email.service.js";
 
+// Helper to reliably extract JSON even if LLM wraps it in markdown or comments
+const parseAiJson = (raw) => {
+    if (!raw || typeof raw !== "string") throw new Error("Empty AI response");
+    const jsonMatch = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+    }
+    return JSON.parse(raw.trim());
+};
+
 export const analyzeResume = async (req, res) => {
     try {
         if (!req.file) {
@@ -43,16 +53,6 @@ export const analyzeResume = async (req, res) => {
                 content: resumeText,
             },
         ];
-
-// Helper to reliably extract JSON even if LLM wraps it in markdown or comments
-const parseAiJson = (raw) => {
-    if (!raw || typeof raw !== "string") throw new Error("Empty AI response");
-    const jsonMatch = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-    }
-    return JSON.parse(raw.trim());
-};
 
         const aiResponse = await askAi(messages);
         const parsed = parseAiJson(aiResponse);

@@ -41,12 +41,15 @@ const Navbar = () => {
       await axios.get(ServerUrl + "/api/auth/logout", {
         withCredentials: true,
       });
+      localStorage.removeItem("token");
       dispatch(setUserData(null));
       setShowCreditPopup(false);
       setShowUserPopup(false);
       navigate("/");
     } catch (error) {
       console.log(error);
+      localStorage.removeItem("token");
+      dispatch(setUserData(null));
     }
   };
 

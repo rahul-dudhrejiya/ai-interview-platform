@@ -13,21 +13,29 @@ import paymentRouter from "./routes/payment.routes.js";
 
 const app = express();
 
-// BUG FIX (found during deployment): CORS requires an EXACT string
-// match between the "Access-Control-Allow-Origin" header and the
-// browser's actual Origin - even a single trailing "/" difference
-// causes every request to be blocked (this happened once before with a
-// hardcoded "localhost:5173/", and now again because FRONTEND_URL was
-// set on Render with a trailing slash, e.g. "...vercel.app/" instead of
-// "...vercel.app"). Rather than relying on every future deployment to
-// get this exactly right, strip any trailing slash from FRONTEND_URL
-// here in code - so it works correctly regardless of how the env var is
-// set.
-const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
+const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://ai-interview-platform-woad-delta.vercel.app",
+];
+if (process.env.FRONTEND_URL) {
+    allowedOrigins.push(process.env.FRONTEND_URL.replace(/\/+$/, ""));
+}
 
 app.use(
     cors({
-        origin: frontendUrl,
+        origin: (origin, callback) => {
+            if (!origin) return callback(null, true);
+            const cleanOrigin = origin.replace(/\/+$/, "");
+            if (
+                allowedOrigins.includes(cleanOrigin) ||
+                cleanOrigin.endsWith(".vercel.app") ||
+                process.env.NODE_ENV !== "production"
+            ) {
+                return callback(null, cleanOrigin);
+            }
+            return callback(null, cleanOrigin);
+        },
         credentials: true,
     })
 );

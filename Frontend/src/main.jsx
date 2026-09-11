@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+import "./utils/constants.js";
 import App from "./App.jsx";
 import { BrowserRouter } from "react-router-dom";
 // BUG FIX: original imported from './app/store.js' but the redux store
