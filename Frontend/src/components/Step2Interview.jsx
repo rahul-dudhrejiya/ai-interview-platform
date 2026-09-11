@@ -8,7 +8,7 @@ import { motion } from "motion/react";
 import { FaMicrophone, FaMicrophoneSlash } from "react-icons/fa";
 import axios from "axios";
 // BUG FIX: import path was '.../App' (invalid) -> '../App'
-import { ServerUrl } from "../App";
+import { ServerUrl } from "../utils/constants";
 import { BsArrowRight } from "react-icons/bs";
 // NEW (Feature: Webcam Confidence Detection)
 import WebcamMonitor from "./WebcamMonitor";
@@ -18,8 +18,19 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   const [isIntroPhase, setIntroPhase] = useState(true);
 
   const [isMicOn, setIsMicOn] = useState(true);
+  const isMicOnRef = useRef(isMicOn);
+
   const recognitionRef = useRef(null);
   const [isAIPlaying, setIsAIPlaying] = useState(false);
+  const isAIPlayingRef = useRef(isAIPlaying);
+
+  useEffect(() => {
+    isMicOnRef.current = isMicOn;
+  }, [isMicOn]);
+
+  useEffect(() => {
+    isAIPlayingRef.current = isAIPlaying;
+  }, [isAIPlaying]);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answer, setAnswer] = useState("");
@@ -258,13 +269,12 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   }, [currentIndex]);
 
   useEffect(() => {
-    if (!("webkitSpeechRecognition" in window)) return;
+    const SpeechRecognitionClass =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionClass) return;
 
-    const recognition = new window.webkitSpeechRecognition();
+    const recognition = new SpeechRecognitionClass();
     recognition.lang = "en-US";
-    // BUG FIX: `continuos` typo -> `continuous`. The mistyped property
-    // did nothing (it just created a random extra field on the object);
-    // the real `continuous` flag was left at its default.
     recognition.continuous = true;
     recognition.interimResults = false;
 
@@ -273,20 +283,28 @@ const Step2Interview = ({ interviewData, onFinish }) => {
       setAnswer((prev) => prev + " " + transcript);
     };
 
-    // BUG FIX: was assigning to `recognition.current` (a made-up property
-    // on the recognition object itself, not the ref). This meant
-    // `recognitionRef.current` stayed `null` forever, so startMic/stopMic
-    // silently did nothing and the mic never actually worked.
+    // Auto-restart recognition when browser stops due to silence or brief pauses
+    recognition.onend = () => {
+      if (isMicOnRef.current && !isAIPlayingRef.current) {
+        try {
+          recognition.start();
+        } catch {
+          /* no-op if already listening */
+        }
+      }
+    };
+
     recognitionRef.current = recognition;
 
     return () => {
-      recognition.stop();
-      recognition.abort();
+      recognition.onend = null;
+      try {
+        recognition.stop();
+        recognition.abort();
+      } catch {
+        /* no-op */
+      }
     };
-    // NOTE: no eslint-disable needed here either — this effect only uses
-    // the stable `setAnswer` setter and refs, nothing that exhaustive-deps
-    // actually requires in the array. (Same "unnecessary disable" mistake
-    // as above — removed it.)
   }, []);
 
   const toggleMic = () => {
@@ -454,6 +472,10 @@ const Step2Interview = ({ interviewData, onFinish }) => {
       onFinish(result.data);
     } catch (error) {
       console.log(error);
+      setSubmitError(
+        error.response?.data?.message ||
+          "Failed to complete interview. Please check your connection and try again."
+      );
     }
   };
 

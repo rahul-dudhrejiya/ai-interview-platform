@@ -10,7 +10,7 @@ import {
 import axios from "axios";
 import { useDispatch, useSelector } from "react-redux";
 // BUG FIX: ServerUrl and setUserData were used below but never imported.
-import { ServerUrl } from "../App";
+import { ServerUrl } from "../utils/constants";
 import { setUserData } from "../redux/userSlice";
 
 const Step1SetUp = ({ onStart }) => {

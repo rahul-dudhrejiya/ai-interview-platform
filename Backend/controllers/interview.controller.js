@@ -44,8 +44,18 @@ export const analyzeResume = async (req, res) => {
             },
         ];
 
+// Helper to reliably extract JSON even if LLM wraps it in markdown or comments
+const parseAiJson = (raw) => {
+    if (!raw || typeof raw !== "string") throw new Error("Empty AI response");
+    const jsonMatch = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+    }
+    return JSON.parse(raw.trim());
+};
+
         const aiResponse = await askAi(messages);
-        const parsed = JSON.parse(aiResponse);
+        const parsed = parseAiJson(aiResponse);
 
         fs.unlinkSync(filepath);
 
@@ -303,10 +313,16 @@ If a TargetJobDescription is provided below, prioritize it: ask about the specif
 
         const parsedQuestions = questionsArray.map(parseTopic);
 
-        // BUG FIX: `user.credits = -50` was OVERWRITING credits with -50
-        // every time, instead of deducting 50 from the existing balance.
-        user.credits -= 50;
-        await user.save();
+        // Atomically deduct 50 credits with a balance check to prevent race conditions
+        const updatedUser = await User.findOneAndUpdate(
+            { _id: req.userId, credits: { $gte: 50 } },
+            { $inc: { credits: -50 } },
+            { new: true }
+        );
+
+        if (!updatedUser) {
+            return res.status(400).json({ message: "Not enough credits. Minimum 50 required." });
+        }
 
         // NEW: coding problems need much longer per-question time limits
         // than spoken answers (writing + testing code takes minutes, not
@@ -315,38 +331,40 @@ If a TargetJobDescription is provided below, prioritize it: ask about the specif
             ? [300, 300, 600, 600, 900]
             : [60, 60, 90, 90, 120];
 
-        const interview = await Interview.create({
-            userId: user._id,
-            role,
-            experience,
-            mode,
-            resumeText: safeResume,
-            // NEW (Feature: Custom Company JD Upload)
-            jdText: safeJD || undefined,
-            questions: parsedQuestions.map((parsed, index) => ({
-                question: parsed.text,
-                topic: parsed.topic,
-                // BUG FIX: array only had 4 items ["easy","easy","medium","hard"]
-                // for 5 questions (index 4 would be undefined). Matches the
-                // stated difficulty progression now.
-                difficulty: ["easy", "easy", "medium", "medium", "hard"][index],
-                timeLimit: timeLimits[index],
-            })),
-        });
+        let interview;
+        try {
+            interview = await Interview.create({
+                userId: updatedUser._id,
+                role,
+                experience,
+                mode,
+                resumeText: safeResume,
+                // NEW (Feature: Custom Company JD Upload)
+                jdText: safeJD || undefined,
+                questions: parsedQuestions.map((parsed, index) => ({
+                    question: parsed.text,
+                    topic: parsed.topic,
+                    difficulty: ["easy", "easy", "medium", "medium", "hard"][index] || "medium",
+                    timeLimit: timeLimits[index] || 60,
+                })),
+            });
+        } catch (dbErr) {
+            // Auto-refund credits if Interview document creation fails
+            await User.findByIdAndUpdate(req.userId, { $inc: { credits: 50 } });
+            throw dbErr;
+        }
 
         res.json({
             interviewId: interview._id,
-            creditsLeft: user.credits,
-            userName: user.name,
-            // NEW: frontend needs this to decide whether to render the
-            // voice-based Step2Interview flow or the CodingRound editor.
+            creditsLeft: updatedUser.credits,
+            userName: updatedUser.name,
             mode: interview.mode,
-            // NEW (Feature: Custom Company JD Upload)
             isJDBased: !!safeJD,
             questions: interview.questions,
         });
     } catch (error) {
-        return res.status(500).json({ message: `Failed to create interview: ${error}` });
+        console.error("generateQuestion error:", error);
+        return res.status(500).json({ message: `Failed to create interview: ${error.message || error}` });
     }
 };
 
@@ -363,8 +381,15 @@ export const submitAnswer = async (req, res) => {
             dominantExpression,
         } = req.body;
 
-        const interview = await Interview.findById(interviewId);
-        const question = interview.questions[questionIndex];
+        const interview = await Interview.findOne({ _id: interviewId, userId: req.userId });
+        if (!interview) {
+            return res.status(404).json({ message: "Interview not found or unauthorized access." });
+        }
+
+        const question = interview.questions?.[questionIndex];
+        if (!question) {
+            return res.status(400).json({ message: "Invalid question index." });
+        }
 
         // If no answer
         if (!answer) {
@@ -578,7 +603,7 @@ If filler words are high (3+) or pace is "too fast"/"too slow", you may briefly 
             ];
 
         const aiResponse = await askAi(messages);
-        const parsed = JSON.parse(aiResponse);
+        const parsed = parseAiJson(aiResponse);
 
         question.answer = answer;
         question.confidence = parsed.confidence;
@@ -633,12 +658,12 @@ export const submitFollowUp = async (req, res) => {
     try {
         const { interviewId, questionIndex, answer } = req.body;
 
-        const interview = await Interview.findById(interviewId);
+        const interview = await Interview.findOne({ _id: interviewId, userId: req.userId });
         if (!interview) {
-            return res.status(404).json({ message: "Interview not found" });
+            return res.status(404).json({ message: "Interview not found or unauthorized access." });
         }
 
-        const question = interview.questions[questionIndex];
+        const question = interview.questions?.[questionIndex];
         if (!question || !question.followUp || !question.followUp.question) {
             return res
                 .status(400)
@@ -688,7 +713,7 @@ Follow-up Answer: ${answer}
         ];
 
         const aiResponse = await askAi(messages);
-        const parsed = JSON.parse(aiResponse);
+        const parsed = parseAiJson(aiResponse);
 
         question.followUp.answer = answer;
         question.followUp.feedback = parsed.feedback;
@@ -707,9 +732,9 @@ Follow-up Answer: ${answer}
 export const finishInterview = async (req, res) => {
     try {
         const { interviewId } = req.body;
-        const interview = await Interview.findById(interviewId);
+        const interview = await Interview.findOne({ _id: interviewId, userId: req.userId });
         if (!interview) {
-            return res.status(400).json({ message: "Failed to find interview" });
+            return res.status(404).json({ message: "Interview not found or unauthorized access." });
         }
 
         // BUG FIX: schema field is `questions` (plural), not `question`.
@@ -803,12 +828,13 @@ export const getMyInterviews = async (req, res) => {
 
 export const getInterviewReport = async (req, res) => {
     try {
-        // BUG FIX: route is `/report/:id`, so the param is `req.params.id`,
-        // not `req.params.difficulty` (which doesn't exist on this route).
-        const interview = await Interview.findById(req.params.id);
+        const interview = await Interview.findOne({
+            _id: req.params.id,
+            userId: req.userId,
+        });
 
         if (!interview) {
-            return res.status(404).json({ message: "Interview not found" });
+            return res.status(404).json({ message: "Interview report not found or unauthorized access." });
         }
 
         // BUG FIX: `interview.question` -> `interview.questions`

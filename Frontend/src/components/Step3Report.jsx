@@ -20,7 +20,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 // NEW (Feature: Email PDF Report)
 import axios from "axios";
-import { ServerUrl } from "../App";
+import { ServerUrl } from "../utils/constants";
 
 const Step3Report = ({ report }) => {
   // BUG FIX (critical structural bug): in the original file the component

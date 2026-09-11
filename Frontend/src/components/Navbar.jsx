@@ -8,7 +8,7 @@ import { FaUserAstronaut } from "react-icons/fa6";
 import { HiMoon, HiSun } from "react-icons/hi";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import { ServerUrl } from "../App";
+import { ServerUrl } from "../utils/constants";
 import { setUserData } from "../redux/userSlice";
 import AuthModel from "./AuthModel";
 

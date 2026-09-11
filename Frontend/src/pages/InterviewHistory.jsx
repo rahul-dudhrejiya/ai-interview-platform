@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 // BUG FIX: `axios` was used below but never imported.
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
-import { ServerUrl } from "../App";
+import { ServerUrl } from "../utils/constants";
 import { FaArrowLeft, FaTrophy } from "react-icons/fa";
 // NEW (Feature: Weak-Topic Tracker)
 import { HiSparkles } from "react-icons/hi";

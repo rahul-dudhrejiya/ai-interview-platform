@@ -4,28 +4,29 @@ import jwt from "jsonwebtoken";
 
 const isAuth = async (req, res, next) => {
     try {
-        // BUG FIX: cookie-parser attaches cookies as `req.cookies` (plural),
-        // not `req.cookie`. `req.cookie` is always undefined, so token was
-        // always undefined and every request "successfully" failed auth.
-        const { token } = req.cookies;
+        const token =
+            req.cookies?.token ||
+            req.headers.authorization?.replace(/^Bearer\s+/i, "");
 
         if (!token) {
-            return res.status(400).json({ message: "User does not have token" });
+            return res.status(401).json({ message: "Authentication required: No token provided." });
         }
 
         const verifyToken = jwt.verify(token, process.env.JWT_SECRET);
 
-        if (!verifyToken) {
+        if (!verifyToken || !verifyToken.userId) {
             return res
-                .status(400)
-                .json({ message: "User does not have a valid token" });
+                .status(401)
+                .json({ message: "Invalid token payload. Please log in again." });
         }
 
         req.userId = verifyToken.userId;
-
         next();
     } catch (error) {
-        return res.status(500).json({ message: `Internal server error ${error}` });
+        if (error.name === "TokenExpiredError" || error.name === "JsonWebTokenError") {
+            return res.status(401).json({ message: "Session expired or invalid. Please log in again." });
+        }
+        return res.status(500).json({ message: "Authentication failure: Internal server error." });
     }
 };
 

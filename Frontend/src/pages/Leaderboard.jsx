@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { motion } from "motion/react";
 import { FaArrowLeft, FaTrophy, FaMedal } from "react-icons/fa";
-import { ServerUrl } from "../App";
+import { ServerUrl } from "../utils/constants";
 
 const RANK_STYLE = {
   1: { color: "#D4A017", bg: "rgba(212,160,23,0.12)" },

@@ -13,19 +13,7 @@ import InterviewReport from "./pages/InterviewReport";
 import Insights from "./pages/Insights";
 import Leaderboard from "./pages/Leaderboard";
 
-// BUG FIX (found during deployment): if VITE_SERVER_URL is set with a
-// trailing slash (e.g. "https://xxx.onrender.com/"), every API call in
-// this app does `ServerUrl + "/api/..."`, producing a DOUBLE slash
-// ("https://xxx.onrender.com//api/..."). Express 5's router doesn't
-// treat that as the same path as the single-slash version, so every
-// request 404s -- even though hitting the correct single-slash URL
-// directly works fine. This is the exact same class of bug as the
-// FRONTEND_URL/CORS trailing-slash issue on the backend - stripping it
-// here means it doesn't matter how the env var is set on Vercel.
-export const ServerUrl = (import.meta.env.VITE_SERVER_URL || "http://localhost:8000").replace(
-  /\/+$/,
-  ""
-);
+import { ServerUrl } from "./utils/constants";
 
 const App = () => {
   const dispatch = useDispatch();

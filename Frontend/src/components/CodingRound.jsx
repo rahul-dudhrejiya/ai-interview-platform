@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { motion } from "motion/react";
 import axios from "axios";
-import { ServerUrl } from "../App";
+import { ServerUrl } from "../utils/constants";
 import Timer from "./Timer";
 import { BsArrowRight } from "react-icons/bs";
 

@@ -4,13 +4,15 @@ import { motion } from "motion/react";
 import { FcGoogle } from "react-icons/fc";
 import { auth, provider } from "../utils/firebase";
 import { signInWithPopup } from "firebase/auth";
-import { ServerUrl } from "../App";
+import { useNavigate } from "react-router-dom";
+import { ServerUrl } from "../utils/constants";
 import axios from "axios";
 import { useDispatch } from "react-redux";
 import { setUserData } from "../redux/userSlice";
 
 const Auth = ({ isModel = false }) => {
   const dispatch = useDispatch();
+  const navigate = useNavigate();
 
   const handleGoogleAuth = async () => {
     try {
@@ -18,13 +20,18 @@ const Auth = ({ isModel = false }) => {
       const user = response.user;
       const name = user.displayName;
       const email = user.email;
+      const idToken = await user.getIdToken();
+
       const result = await axios.post(
         ServerUrl + "/api/auth/google",
-        { name, email },
+        { name, email, idToken },
         { withCredentials: true }
       );
 
       dispatch(setUserData(result.data));
+      if (!isModel) {
+        navigate("/");
+      }
     } catch (error) {
       console.log(error);
       dispatch(setUserData(null));

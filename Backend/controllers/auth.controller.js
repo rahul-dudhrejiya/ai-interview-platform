@@ -1,31 +1,50 @@
+import axios from "axios";
 import genToken from "../config/token.js";
 import User from "../models/user.model.js";
 
 export const googleAuth = async (req, res) => {
     try {
-        const { name, email } = req.body;
-        let user = await User.findOne({ email });
+        const { name, email, idToken } = req.body;
+
+        let verifiedEmail = email;
+        let verifiedName = name;
+
+        if (idToken) {
+            try {
+                // Cryptographically verify Google idToken via Google's tokeninfo endpoint
+                const tokenRes = await axios.get(
+                    `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`,
+                    { timeout: 10000 }
+                );
+                if (tokenRes.data && tokenRes.data.email) {
+                    verifiedEmail = tokenRes.data.email;
+                    verifiedName = tokenRes.data.name || name || "Candidate";
+                } else {
+                    return res.status(401).json({ message: "Invalid Google ID token." });
+                }
+            } catch (err) {
+                console.error("Google ID Token verification failed:", err.message);
+                return res.status(401).json({ message: "Failed to verify Google credentials." });
+            }
+        } else if (process.env.NODE_ENV === "production") {
+            return res.status(401).json({ message: "Google ID token is required." });
+        }
+
+        if (!verifiedEmail) {
+            return res.status(400).json({ message: "Valid email is required." });
+        }
+
+        let user = await User.findOne({ email: verifiedEmail });
 
         if (!user) {
             user = await User.create({
-                name,
-                email,
+                name: verifiedName || "User",
+                email: verifiedEmail,
             });
         }
 
         let token = await genToken(user._id);
 
-        // BUG FIX (deployment): the old settings (secure: false,
-        // sameSite: "strict") only work when frontend and backend are on
-        // the SAME origin, like in local dev (both on localhost). In
-        // production, the frontend (e.g. Vercel) and backend (e.g.
-        // Render) live on DIFFERENT domains — that makes this a
-        // cross-site cookie, which browsers block unless it's marked
-        // `sameSite: "none"` AND `secure: true` (which itself requires
-        // HTTPS - both Vercel and Render provide this by default). Without
-        // this fix, login would appear to "succeed" (no error) but the
-        // cookie would silently never be sent back on later requests,
-        // so the user would look logged-out immediately after logging in.
         const isProduction = process.env.NODE_ENV === "production";
 
         res.cookie("token", token, {
@@ -37,7 +56,7 @@ export const googleAuth = async (req, res) => {
 
         return res.status(200).json(user);
     } catch (error) {
-        return res.status(500).json({ message: `Google auth Error: ${error}` });
+        return res.status(500).json({ message: "Authentication failed: Internal server error." });
     }
 };
 

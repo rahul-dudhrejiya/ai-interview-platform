@@ -14,7 +14,7 @@ import {
     Tooltip,
     Cell,
 } from "recharts";
-import { ServerUrl } from "../App";
+import { ServerUrl } from "../utils/constants";
 
 const STATUS_STYLE = {
     weak: { color: "var(--red)", bg: "rgba(214,69,69,0.1)", label: "Needs Work" },

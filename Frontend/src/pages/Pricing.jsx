@@ -3,17 +3,16 @@ import { FaArrowLeft, FaCheckCircle } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import axios from "axios";
-import { ServerUrl } from "../App";
-import { useDispatch } from "react-redux";
+import { ServerUrl } from "../utils/constants";
+import { useDispatch, useSelector } from "react-redux";
 import { setUserData } from "../redux/userSlice";
 
 const Pricing = () => {
   const navigate = useNavigate();
   const [selectedPlan, setSelectedPlan] = useState("free");
   const [loadingPlan, setLoadingPlan] = useState(null);
-  // BUG FIX: `useDispatch` (the hook itself) was assigned instead of
-  // calling it. Needs `useDispatch()` to actually get the dispatch function.
   const dispatch = useDispatch();
+  const { userData } = useSelector((state) => state.user);
 
   const plans = [
     {
@@ -50,9 +49,6 @@ const Pricing = () => {
       credits: 650,
       description: "Best for serious, high-volume interview practice.",
       features: [
-        // BUG FIX: this said "150 AI Interview Credits" for the Pro plan
-        // even though the plan actually grants 650 credits — copy/paste
-        // mismatch from the Starter plan.
         "650 AI Interview Credits",
         "Advanced AI Feedback",
         "Performance Analytics",
@@ -63,16 +59,31 @@ const Pricing = () => {
   ];
 
   const handlePayment = async (plan) => {
+    if (!userData) {
+      alert("Please log in first to purchase credits.");
+      navigate("/auth");
+      return;
+    }
+
+    if (plan.id === "free") {
+      alert("The Free tier (100 credits) is automatically available for every new user.");
+      return;
+    }
+
     try {
       setLoadingPlan(plan.id);
 
-      const amount = plan.id === "basic" ? 100 : plan.id === "pro" ? 500 : 0;
-
       const result = await axios.post(
         ServerUrl + "/api/payment/order",
-        { planId: plan.id, amount, credits: plan.credits },
+        { planId: plan.id },
         { withCredentials: true }
       );
+
+      if (!window.Razorpay) {
+        alert("Razorpay payment gateway failed to load. Please check your connection or disable ad blockers.");
+        setLoadingPlan(null);
+        return;
+      }
 
       const options = {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID,
@@ -84,11 +95,6 @@ const Pricing = () => {
 
         handler: async function (response) {
           try {
-            // BUG FIX: original had `dispatch(setUserData(...))` written
-            // as a THIRD argument inside the axios.post(...) call itself
-            // — a syntax error (axios.post only takes url, data, config).
-            // The dispatch call now happens after the request resolves,
-            // as its own separate statement.
             const verifypay = await axios.post(
               ServerUrl + "/api/payment/verify",
               response,
@@ -113,10 +119,8 @@ const Pricing = () => {
 
       setLoadingPlan(null);
     } catch (error) {
-      // BUG FIX: `setLoadingPlan(error)` was setting the loading state to
-      // an Error object instead of resetting it to null — this would
-      // permanently break the button's disabled/label logic on failure.
       console.log(error);
+      alert(error.response?.data?.message || "Failed to create payment order. Please try again.");
       setLoadingPlan(null);
     }
   };

@@ -91,7 +91,7 @@ const WebcamMonitor = forwardRef((props, ref) => {
           statsRef.current.expressionCounts[topExpression] =
             (statsRef.current.expressionCounts[topExpression] || 0) + 1;
         }
-      } catch (error) {
+      } catch {
         // Detection can occasionally fail on a mid-transition frame -
         // just skip that tick rather than crashing the interview.
       }
