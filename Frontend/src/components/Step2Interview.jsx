@@ -19,10 +19,22 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
   const [isMicOn, setIsMicOn] = useState(true);
   const isMicOnRef = useRef(isMicOn);
+  const shouldListenRef = useRef(false);
 
   const recognitionRef = useRef(null);
   const [isAIPlaying, setIsAIPlaying] = useState(false);
   const isAIPlayingRef = useRef(isAIPlaying);
+
+  const [interimText, setInterimText] = useState("");
+  const [micLang, setMicLang] = useState(() => {
+    return (
+      localStorage.getItem("mic_lang") ||
+      (typeof navigator !== "undefined" &&
+      navigator.language?.toLowerCase().startsWith("en-in")
+        ? "en-IN"
+        : "en-US")
+    );
+  });
 
   useEffect(() => {
     isMicOnRef.current = isMicOn;
@@ -139,6 +151,8 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   const videoSource = voiceGender === "male" ? maleVideo : femaleVideo;
 
   const stopMic = () => {
+    shouldListenRef.current = false;
+    setInterimText("");
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -149,6 +163,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   };
 
   const startMic = () => {
+    shouldListenRef.current = true;
     if (recognitionRef.current && !isAIPlayingRef.current) {
       try {
         recognitionRef.current.start();
@@ -332,17 +347,21 @@ const Step2Interview = ({ interviewData, onFinish }) => {
     }
 
     const recognition = new SpeechRecognitionClass();
-    recognition.lang = "en-US";
+    recognition.lang = micLang;
     recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onresult = (event) => {
       let finalChunk = "";
+      let interimChunk = "";
+
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const item = event.results[i];
         const text = item[0]?.transcript || "";
         if (item.isFinal) {
           finalChunk += " " + text.trim();
+        } else {
+          interimChunk += " " + text.trim();
         }
       }
 
@@ -352,33 +371,60 @@ const Step2Interview = ({ interviewData, onFinish }) => {
           const cleanChunk = finalChunk.trim();
           return trimmedPrev ? `${trimmedPrev} ${cleanChunk}` : cleanChunk;
         });
+        setInterimText("");
+      } else if (interimChunk.trim()) {
+        setInterimText(interimChunk.trim());
       }
     };
 
     recognition.onerror = (event) => {
+      // no-speech is normal when user pauses to think; do not block mic
+      if (event.error === "no-speech") {
+        setInterimText("");
+        return;
+      }
       console.warn("Speech recognition event error:", event.error);
-      if (event.error === "not-allowed") {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         setSubmitError(
           "Microphone permission is blocked. Please allow microphone access in your browser address bar."
         );
         setIsMicOn(false);
+        shouldListenRef.current = false;
       }
     };
 
+    let restartTimeout = null;
+
     // Auto-restart recognition when browser stops due to silence or brief pauses
     recognition.onend = () => {
-      if (isMicOnRef.current && !isAIPlayingRef.current) {
-        try {
-          recognition.start();
-        } catch {
-          /* no-op if already listening */
-        }
+      setInterimText("");
+      if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
+        clearTimeout(restartTimeout);
+        restartTimeout = setTimeout(() => {
+          if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
+            try {
+              recognition.start();
+            } catch {
+              // Retry once if browser audio engine was still resetting
+              setTimeout(() => {
+                if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
+                  try {
+                    recognition.start();
+                  } catch {
+                    /* no-op */
+                  }
+                }
+              }, 400);
+            }
+          }
+        }, 200);
       }
     };
 
     recognitionRef.current = recognition;
 
     return () => {
+      clearTimeout(restartTimeout);
       recognition.onend = null;
       recognition.onerror = null;
       try {
@@ -388,7 +434,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
         /* no-op */
       }
     };
-  }, []);
+  }, [micLang]);
 
   const toggleMic = () => {
     const nextMic = !isMicOn;
@@ -716,18 +762,30 @@ const Step2Interview = ({ interviewData, onFinish }) => {
             </div>
           )}
 
-          <textarea
-            placeholder={
-              isAnsweringFollowUp
-                ? "Type or speak your follow-up answer here..."
-                : "Type or speak your answer here..."
-            }
-            onChange={(e) => setAnswer(e.target.value)}
-            value={answer}
-            rows={8}
-            className="w-full rounded-xl border p-4 text-sm outline-none resize-none flex-1"
-            style={{ borderColor: "var(--border)" }}
-          />
+          <div className="relative flex-1 flex flex-col">
+            <textarea
+              placeholder={
+                isAnsweringFollowUp
+                  ? "Speak or type your follow-up answer here..."
+                  : "Speak or type your answer here..."
+              }
+              onChange={(e) => {
+                setAnswer(e.target.value);
+                setInterimText("");
+              }}
+              value={answer + (interimText ? (answer ? " " : "") + interimText : "")}
+              rows={8}
+              className="w-full rounded-xl border p-4 text-sm outline-none resize-none flex-1 font-normal leading-relaxed"
+              style={{ borderColor: "var(--border)" }}
+            />
+
+            {interimText && (
+              <div className="flex items-center gap-2 mt-2 px-3 py-1.5 bg-indigo-50/90 border border-indigo-200 rounded-lg text-xs text-indigo-700 font-medium">
+                <span className="w-2 h-2 rounded-full bg-indigo-600 animate-ping shrink-0"></span>
+                <span className="truncate">Hearing: "{interimText}"</span>
+              </div>
+            )}
+          </div>
 
           {/* Stage 1: answering the main question */}
           {!feedback && (
@@ -735,14 +793,11 @@ const Step2Interview = ({ interviewData, onFinish }) => {
               {isMicOn && !isAIPlaying && (
                 <div className="flex items-center gap-2 mb-2 text-xs text-emerald-600 font-medium">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-                  <span>Microphone active — speaking will transcribe here, or you can type directly.</span>
+                  <span>Microphone active — speaks will write immediately, or you can type.</span>
                 </div>
               )}
 
-              {/* NEW: visible error banner - previously a failed/timed-out
-                  submit just silently reverted the button with no
-                  explanation, leaving the person confused about what
-                  happened. */}
+              {/* NEW: visible error banner */}
               {submitError && (
                 <div
                   className="text-xs rounded-lg px-3 py-2 mb-3"
@@ -755,14 +810,32 @@ const Step2Interview = ({ interviewData, onFinish }) => {
                 <motion.button
                   onClick={toggleMic}
                   whileTap={{ scale: 0.95 }}
-                  className="w-12 h-12 rounded-full flex items-center justify-center shrink-0"
+                  title={isMicOn ? "Mute Microphone" : "Unmute Microphone"}
+                  className="w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition"
                   style={{
-                    backgroundColor: isMicOn ? "rgba(59,79,224,0.1)" : "var(--surface-muted)",
+                    backgroundColor: isMicOn ? "rgba(59,79,224,0.12)" : "var(--surface-muted)",
                     color: isMicOn ? "var(--indigo)" : "#9CA3AF",
+                    boxShadow: isMicOn ? "0 0 0 2px rgba(59,79,224,0.3)" : "none",
                   }}
                 >
                   {isMicOn ? <FaMicrophone size={18} /> : <FaMicrophoneSlash size={18} />}
                 </motion.button>
+
+                <select
+                  value={micLang}
+                  onChange={(e) => {
+                    const newLang = e.target.value;
+                    setMicLang(newLang);
+                    localStorage.setItem("mic_lang", newLang);
+                  }}
+                  className="text-xs border rounded-xl px-2.5 py-3 outline-none font-medium bg-white cursor-pointer"
+                  style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+                  title="Speech Accent / Language"
+                >
+                  <option value="en-IN">English (India)</option>
+                  <option value="en-US">English (US)</option>
+                  <option value="en-GB">English (UK)</option>
+                </select>
 
                 <motion.button
                   onClick={submitAnswer}
@@ -835,14 +908,32 @@ const Step2Interview = ({ interviewData, onFinish }) => {
                 <motion.button
                   onClick={toggleMic}
                   whileTap={{ scale: 0.95 }}
+                  title={isMicOn ? "Mute Microphone" : "Unmute Microphone"}
                   className="w-12 h-12 rounded-full flex items-center justify-center shrink-0"
                   style={{
-                    backgroundColor: isMicOn ? "rgba(59,79,224,0.1)" : "var(--surface-muted)",
+                    backgroundColor: isMicOn ? "rgba(59,79,224,0.12)" : "var(--surface-muted)",
                     color: isMicOn ? "var(--indigo)" : "#9CA3AF",
+                    boxShadow: isMicOn ? "0 0 0 2px rgba(59,79,224,0.3)" : "none",
                   }}
                 >
                   {isMicOn ? <FaMicrophone size={18} /> : <FaMicrophoneSlash size={18} />}
                 </motion.button>
+
+                <select
+                  value={micLang}
+                  onChange={(e) => {
+                    const newLang = e.target.value;
+                    setMicLang(newLang);
+                    localStorage.setItem("mic_lang", newLang);
+                  }}
+                  className="text-xs border rounded-xl px-2.5 py-3 outline-none font-medium bg-white cursor-pointer"
+                  style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+                  title="Speech Accent / Language"
+                >
+                  <option value="en-IN">English (India)</option>
+                  <option value="en-US">English (US)</option>
+                  <option value="en-GB">English (UK)</option>
+                </select>
 
                 <motion.button
                   onClick={submitFollowUpAnswer}
