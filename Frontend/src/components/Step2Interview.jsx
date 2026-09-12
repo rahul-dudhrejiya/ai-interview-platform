@@ -21,11 +21,18 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   const isMicOnRef = useRef(isMicOn);
   const shouldListenRef = useRef(false);
 
-  const recognitionRef = useRef(null);
+  const recognitionInstanceRef = useRef(null);
+  const isListeningActiveRef = useRef(false);
+  const isStartingRef = useRef(false);
+  const restartTimerRef = useRef(null);
+  const consecutiveErrorsRef = useRef(0);
+
   const [isAIPlaying, setIsAIPlaying] = useState(false);
   const isAIPlayingRef = useRef(isAIPlaying);
 
   const [interimText, setInterimText] = useState("");
+  const interimTextRef = useRef("");
+
   const [micLang, setMicLang] = useState(() => {
     return (
       localStorage.getItem("mic_lang") ||
@@ -35,6 +42,11 @@ const Step2Interview = ({ interviewData, onFinish }) => {
         : "en-US")
     );
   });
+  const micLangRef = useRef(micLang);
+
+  useEffect(() => {
+    micLangRef.current = micLang;
+  }, [micLang]);
 
   useEffect(() => {
     isMicOnRef.current = isMicOn;
@@ -46,6 +58,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answer, setAnswer] = useState("");
+  const answerRef = useRef("");
   const [feedback, setFeedback] = useState("");
   const [timeLeft, setTimeLeft] = useState(questions[0]?.timeLimit || 60);
   const [selectedVoice, setSelectedVoice] = useState(null);
@@ -150,26 +163,208 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
   const videoSource = voiceGender === "male" ? maleVideo : femaleVideo;
 
-  const stopMic = () => {
-    shouldListenRef.current = false;
-    setInterimText("");
-    if (recognitionRef.current) {
+  // CRITICAL FIX: Flush any pending interim speech into permanent answer.
+  // Guarantees words are NEVER wiped out when Chrome pauses or restarts.
+  const flushInterim = () => {
+    const pending = interimTextRef.current.trim();
+    if (pending) {
+      const prev = answerRef.current.trim();
+      const updated = prev ? `${prev} ${pending}` : pending;
+      answerRef.current = updated;
+      setAnswer(updated);
+      interimTextRef.current = "";
+      setInterimText("");
+      return updated;
+    }
+    return answerRef.current;
+  };
+
+  const safeStartRecognition = () => {
+    if (!shouldListenRef.current || !isMicOnRef.current || isAIPlayingRef.current) {
+      return;
+    }
+    if (isListeningActiveRef.current || isStartingRef.current) {
+      return;
+    }
+
+    const SpeechRecognitionClass =
+      typeof window !== "undefined"
+        ? window.SpeechRecognition || window.webkitSpeechRecognition
+        : null;
+
+    if (!SpeechRecognitionClass) {
+      console.warn("SpeechRecognition not supported in this browser.");
+      return;
+    }
+
+    // Clean up any old instance
+    if (recognitionInstanceRef.current) {
       try {
-        recognitionRef.current.stop();
+        recognitionInstanceRef.current.onresult = null;
+        recognitionInstanceRef.current.onend = null;
+        recognitionInstanceRef.current.onerror = null;
+        recognitionInstanceRef.current.onstart = null;
+        recognitionInstanceRef.current.abort();
       } catch {
         /* no-op */
+      }
+      recognitionInstanceRef.current = null;
+    }
+
+    try {
+      isStartingRef.current = true;
+      const rec = new SpeechRecognitionClass();
+      rec.lang = micLangRef.current || "en-US";
+      rec.continuous = true;
+      rec.interimResults = true;
+
+      rec.onstart = () => {
+        isListeningActiveRef.current = true;
+        isStartingRef.current = false;
+        consecutiveErrorsRef.current = 0;
+      };
+
+      rec.onresult = (event) => {
+        let finalChunk = "";
+        let interimChunk = "";
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const item = event.results[i];
+          const text = item[0]?.transcript || "";
+          if (item.isFinal) {
+            finalChunk += " " + text.trim();
+          } else {
+            interimChunk += " " + text.trim();
+          }
+        }
+
+        if (finalChunk.trim()) {
+          const cleanFinal = finalChunk.trim();
+          const prev = answerRef.current.trim();
+          const updated = prev ? `${prev} ${cleanFinal}` : cleanFinal;
+          answerRef.current = updated;
+          setAnswer(updated);
+        }
+
+        const cleanInterim = interimChunk.trim();
+        interimTextRef.current = cleanInterim;
+        setInterimText(cleanInterim);
+      };
+
+      rec.onerror = (event) => {
+        if (event.error === "no-speech") {
+          // Normal pause in speaking, do nothing
+          return;
+        }
+
+        console.warn("Speech recognition notice:", event.error);
+
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          setSubmitError(
+            "Microphone permission is blocked. Please allow microphone access in your browser address bar."
+          );
+          setIsMicOn(false);
+          isMicOnRef.current = false;
+          shouldListenRef.current = false;
+          isListeningActiveRef.current = false;
+          isStartingRef.current = false;
+          return;
+        }
+
+        if (event.error === "network") {
+          consecutiveErrorsRef.current += 1;
+        }
+      };
+
+      rec.onend = () => {
+        isListeningActiveRef.current = false;
+        isStartingRef.current = false;
+
+        // CRITICAL: Flush any pending speech into answer immediately so words NEVER vanish!
+        flushInterim();
+
+        // Auto-restart if user still wants mic on
+        if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
+          clearTimeout(restartTimerRef.current);
+          const delay =
+            consecutiveErrorsRef.current > 0
+              ? Math.min(1500, 250 * Math.pow(1.5, consecutiveErrorsRef.current))
+              : 150;
+
+          restartTimerRef.current = setTimeout(() => {
+            if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
+              safeStartRecognition();
+            }
+          }, delay);
+        }
+      };
+
+      recognitionInstanceRef.current = rec;
+      rec.start();
+    } catch (err) {
+      isStartingRef.current = false;
+      isListeningActiveRef.current = false;
+      console.warn("Could not start speech recognition:", err);
+      if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = setTimeout(() => {
+          if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
+            safeStartRecognition();
+          }
+        }, 400);
       }
     }
   };
 
   const startMic = () => {
     shouldListenRef.current = true;
-    if (recognitionRef.current && !isAIPlayingRef.current) {
+    safeStartRecognition();
+  };
+
+  const stopMic = () => {
+    shouldListenRef.current = false;
+    clearTimeout(restartTimerRef.current);
+    flushInterim();
+    isStartingRef.current = false;
+    isListeningActiveRef.current = false;
+
+    if (recognitionInstanceRef.current) {
       try {
-        recognitionRef.current.start();
+        recognitionInstanceRef.current.onresult = null;
+        recognitionInstanceRef.current.onend = null;
+        recognitionInstanceRef.current.onerror = null;
+        recognitionInstanceRef.current.onstart = null;
+        recognitionInstanceRef.current.stop();
+        recognitionInstanceRef.current.abort();
       } catch {
-        /* no-op: recognition may already be running */
+        /* no-op */
       }
+      recognitionInstanceRef.current = null;
+    }
+  };
+
+  const toggleMic = () => {
+    const nextMic = !isMicOn;
+    setIsMicOn(nextMic);
+    isMicOnRef.current = nextMic;
+    if (nextMic) {
+      startMic();
+    } else {
+      stopMic();
+    }
+  };
+
+  const handleLangChange = (newLang) => {
+    setMicLang(newLang);
+    micLangRef.current = newLang;
+    localStorage.setItem("mic_lang", newLang);
+    if (isMicOnRef.current && shouldListenRef.current) {
+      stopMic();
+      setTimeout(() => {
+        if (isMicOnRef.current) {
+          startMic();
+        }
+      }, 100);
     }
   };
 
@@ -338,117 +533,10 @@ const Step2Interview = ({ interviewData, onFinish }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentIndex]);
 
-  useEffect(() => {
-    const SpeechRecognitionClass =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionClass) {
-      console.warn("SpeechRecognition not supported in this browser.");
-      return;
-    }
-
-    const recognition = new SpeechRecognitionClass();
-    recognition.lang = micLang;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    recognition.onresult = (event) => {
-      let finalChunk = "";
-      let interimChunk = "";
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const item = event.results[i];
-        const text = item[0]?.transcript || "";
-        if (item.isFinal) {
-          finalChunk += " " + text.trim();
-        } else {
-          interimChunk += " " + text.trim();
-        }
-      }
-
-      if (finalChunk.trim()) {
-        setAnswer((prev) => {
-          const trimmedPrev = prev.trim();
-          const cleanChunk = finalChunk.trim();
-          return trimmedPrev ? `${trimmedPrev} ${cleanChunk}` : cleanChunk;
-        });
-        setInterimText("");
-      } else if (interimChunk.trim()) {
-        setInterimText(interimChunk.trim());
-      }
-    };
-
-    recognition.onerror = (event) => {
-      // no-speech is normal when user pauses to think; do not block mic
-      if (event.error === "no-speech") {
-        setInterimText("");
-        return;
-      }
-      console.warn("Speech recognition event error:", event.error);
-      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-        setSubmitError(
-          "Microphone permission is blocked. Please allow microphone access in your browser address bar."
-        );
-        setIsMicOn(false);
-        shouldListenRef.current = false;
-      }
-    };
-
-    let restartTimeout = null;
-
-    // Auto-restart recognition when browser stops due to silence or brief pauses
-    recognition.onend = () => {
-      setInterimText("");
-      if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
-        clearTimeout(restartTimeout);
-        restartTimeout = setTimeout(() => {
-          if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
-            try {
-              recognition.start();
-            } catch {
-              // Retry once if browser audio engine was still resetting
-              setTimeout(() => {
-                if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
-                  try {
-                    recognition.start();
-                  } catch {
-                    /* no-op */
-                  }
-                }
-              }, 400);
-            }
-          }
-        }, 200);
-      }
-    };
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      clearTimeout(restartTimeout);
-      recognition.onend = null;
-      recognition.onerror = null;
-      try {
-        recognition.stop();
-        recognition.abort();
-      } catch {
-        /* no-op */
-      }
-    };
-  }, [micLang]);
-
-  const toggleMic = () => {
-    const nextMic = !isMicOn;
-    setIsMicOn(nextMic);
-    if (nextMic) {
-      startMic();
-    } else {
-      stopMic();
-    }
-  };
-
   const submitAnswer = async () => {
     if (isSubmitting) return;
 
+    const finalAnswer = flushInterim();
     stopMic();
     setIsSubmitting(true);
 
@@ -471,7 +559,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
         {
           interviewId,
           questionIndex: currentIndex,
-          answer,
+          answer: finalAnswer,
           timeTaken: currentQuestion.timeLimit - timeLeft,
           eyeContactPercentage: webcamStats.eyeContactPercentage,
           dominantExpression: webcamStats.dominantExpression,
@@ -503,7 +591,10 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   };
 
   const handleNext = async () => {
+    answerRef.current = "";
+    interimTextRef.current = "";
     setAnswer("");
+    setInterimText("");
     setFeedback("");
     // NEW: reset follow-up state so it doesn't leak into the next question
     setFollowUpQuestion(null);
@@ -537,7 +628,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
     setTimeLeft(nextQuestion?.timeLimit || 60);
     setCurrentIndex(currentIndex + 1);
     setTimeout(() => {
-      if (isMicOn) startMic();
+      if (isMicOnRef.current) startMic();
     }, 500);
   };
 
@@ -545,21 +636,25 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   // Called when the candidate chooses to answer the AI's probing
   // follow-up instead of skipping straight to the next question.
   const startFollowUp = async () => {
+    answerRef.current = "";
+    interimTextRef.current = "";
     setAnswer("");
+    setInterimText("");
     setIsAnsweringFollowUp(true);
     await speakText(followUpQuestion);
-    if (isMicOn) startMic();
+    if (isMicOnRef.current) startMic();
   };
 
   const submitFollowUpAnswer = async () => {
     if (isSubmittingFollowUp) return;
+    const finalAnswer = flushInterim();
     stopMic();
     setIsSubmittingFollowUp(true);
 
     try {
       const result = await axios.post(
         ServerUrl + "/api/interview/submit-followup",
-        { interviewId, questionIndex: currentIndex, answer },
+        { interviewId, questionIndex: currentIndex, answer: finalAnswer },
         { withCredentials: true, timeout: 40000 }
       );
 
@@ -592,6 +687,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   const finishInterview = async () => {
     stopMic();
     setIsMicOn(false);
+    isMicOnRef.current = false;
     try {
       const result = await axios.post(
         ServerUrl + "/api/interview/finish",
@@ -629,11 +725,10 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
   useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-        recognitionRef.current.abort();
+      stopMic();
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
       }
-      window.speechSynthesis.cancel();
     };
   }, []);
 
@@ -770,10 +865,17 @@ const Step2Interview = ({ interviewData, onFinish }) => {
                   : "Speak or type your answer here..."
               }
               onChange={(e) => {
-                setAnswer(e.target.value);
+                const val = e.target.value;
+                answerRef.current = val;
+                setAnswer(val);
+                interimTextRef.current = "";
                 setInterimText("");
               }}
-              value={answer + (interimText ? (answer ? " " : "") + interimText : "")}
+              value={
+                interimText
+                  ? (answer ? answer.trimEnd() + " " : "") + interimText
+                  : answer
+              }
               rows={8}
               className="w-full rounded-xl border p-4 text-sm outline-none resize-none flex-1 font-normal leading-relaxed"
               style={{ borderColor: "var(--border)" }}
@@ -823,11 +925,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
                 <select
                   value={micLang}
-                  onChange={(e) => {
-                    const newLang = e.target.value;
-                    setMicLang(newLang);
-                    localStorage.setItem("mic_lang", newLang);
-                  }}
+                  onChange={(e) => handleLangChange(e.target.value)}
                   className="text-xs border rounded-xl px-2.5 py-3 outline-none font-medium bg-white cursor-pointer"
                   style={{ borderColor: "var(--border)", color: "var(--ink)" }}
                   title="Speech Accent / Language"
@@ -921,11 +1019,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
                 <select
                   value={micLang}
-                  onChange={(e) => {
-                    const newLang = e.target.value;
-                    setMicLang(newLang);
-                    localStorage.setItem("mic_lang", newLang);
-                  }}
+                  onChange={(e) => handleLangChange(e.target.value)}
                   className="text-xs border rounded-xl px-2.5 py-3 outline-none font-medium bg-white cursor-pointer"
                   style={{ borderColor: "var(--border)", color: "var(--ink)" }}
                   title="Speech Accent / Language"
