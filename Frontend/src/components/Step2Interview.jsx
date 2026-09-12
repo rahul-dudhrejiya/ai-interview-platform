@@ -5,7 +5,7 @@ import maleVideo from "../assets/videos/male-ai.mp4";
 import femaleVideo from "../assets/videos/female-ai.mp4";
 import Timer from "./Timer";
 import { motion } from "motion/react";
-import { FaMicrophone, FaMicrophoneSlash } from "react-icons/fa";
+import { FaMicrophone, FaMicrophoneSlash, FaVolumeUp } from "react-icons/fa";
 import axios from "axios";
 // BUG FIX: import path was '.../App' (invalid) -> '../App'
 import { ServerUrl } from "../utils/constants";
@@ -71,14 +71,22 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
   useEffect(() => {
     const loadVoice = () => {
-      const voices = window.speechSynthesis.getVoices();
-      if (!voices.length) return;
+      if (typeof window === "undefined" || !window.speechSynthesis) {
+        setVoiceReady(true);
+        return;
+      }
 
+      const voices = window.speechSynthesis.getVoices();
+      if (!voices || !voices.length) return;
+
+      // Female voices (Windows Zira, Google, Samantha, etc.)
       const femaleVoice = voices.find(
         (v) =>
+          v.name.toLowerCase().includes("zira") ||
           v.name.toLowerCase().includes("monica") ||
           v.name.toLowerCase().includes("samantha") ||
-          v.name.toLowerCase().includes("female")
+          v.name.toLowerCase().includes("female") ||
+          (v.lang?.toLowerCase().startsWith("en") && v.name.toLowerCase().includes("female"))
       );
 
       if (femaleVoice) {
@@ -88,16 +96,27 @@ const Step2Interview = ({ interviewData, onFinish }) => {
         return;
       }
 
+      // Male voices (David, Mark, etc.)
       const maleVoice = voices.find(
         (v) =>
           v.name.toLowerCase().includes("david") ||
           v.name.toLowerCase().includes("mark") ||
-          v.name.toLowerCase().includes("male")
+          v.name.toLowerCase().includes("male") ||
+          (v.lang?.toLowerCase().startsWith("en") && v.name.toLowerCase().includes("male"))
       );
 
       if (maleVoice) {
         setSelectedVoice(maleVoice);
         setVoiceGender("male");
+        setVoiceReady(true);
+        return;
+      }
+
+      // English fallback
+      const englishVoice = voices.find((v) => v.lang?.toLowerCase().startsWith("en"));
+      if (englishVoice) {
+        setSelectedVoice(englishVoice);
+        setVoiceGender("female");
         setVoiceReady(true);
         return;
       }
@@ -108,12 +127,12 @@ const Step2Interview = ({ interviewData, onFinish }) => {
     };
 
     loadVoice();
-    window.speechSynthesis.onvoiceschanged = loadVoice;
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = loadVoice;
+    }
 
-    // Safety net: if no voice has loaded within 3 seconds, stop waiting
-    // and let the interview proceed without narration instead of hanging
-    // indefinitely.
-    const fallbackTimer = setTimeout(() => setVoiceReady(true), 3000);
+    // Unblock interview progression within 1 second even if system voices load slowly
+    const fallbackTimer = setTimeout(() => setVoiceReady(true), 1000);
     return () => clearTimeout(fallbackTimer);
   }, []);
 
@@ -130,7 +149,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   };
 
   const startMic = () => {
-    if (recognitionRef.current && !isAIPlaying) {
+    if (recognitionRef.current && !isAIPlayingRef.current) {
       try {
         recognitionRef.current.start();
       } catch {
@@ -142,58 +161,94 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   /* ------------ SPEAK FUNCTION -------------- */
   const speakText = (text) => {
     return new Promise((resolve) => {
-      if (!window.speechSynthesis || !selectedVoice) {
+      if (typeof window === "undefined" || !window.speechSynthesis) {
+        setSubtitle(text);
         resolve();
         return;
       }
 
-      window.speechSynthesis.cancel();
+      let finished = false;
+      let safetyTimer = null;
+      let resumeInterval = null;
 
-      const humanText = text.replace(/,/g, ", ... ").replace(/\./g, ". ... ");
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (safetyTimer) clearTimeout(safetyTimer);
+        if (resumeInterval) clearInterval(resumeInterval);
 
-      const utterance = new SpeechSynthesisUtterance(humanText);
-      utterance.voice = selectedVoice;
-      utterance.rate = 0.92;
-      utterance.pitch = 1.05;
-      utterance.volume = 1;
-
-      utterance.onstart = () => {
-        setIsAIPlaying(true);
-        stopMic();
-        // NEW: play() returns a Promise that can reject (e.g. browser
-        // autoplay policy). Left unhandled, that's an unhandled promise
-        // rejection - harmless to functionality here (video is a visual
-        // extra, not required for the interview to work) but worth
-        // catching cleanly instead of leaving it as console noise.
-        videoRef.current?.play().catch(() => { });
-      };
-
-      utterance.onend = () => {
         if (videoRef.current) {
-          videoRef.current.pause();
-          videoRef.current.currentTime = 0;
+          try {
+            videoRef.current.pause();
+            videoRef.current.currentTime = 0;
+          } catch {
+            /* no-op */
+          }
         }
         setIsAIPlaying(false);
 
-        if (isMicOn) {
+        if (isMicOnRef.current) {
           startMic();
         }
 
         setTimeout(() => {
           setSubtitle("");
           resolve();
-        }, 300);
+        }, 250);
       };
 
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        /* no-op */
+      }
+
+      const humanText = text.replace(/,/g, ", ... ").replace(/\./g, ". ... ");
+      const utterance = new SpeechSynthesisUtterance(humanText);
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+      }
+      utterance.rate = 0.95;
+      utterance.pitch = 1.02;
+      utterance.volume = 1;
+
+      utterance.onstart = () => {
+        setIsAIPlaying(true);
+        stopMic();
+        videoRef.current?.play().catch(() => {});
+      };
+
+      utterance.onend = finish;
+      utterance.onerror = (e) => {
+        console.warn("Speech synthesis notice:", e);
+        finish();
+      };
+
+      // Safety fallback: prevents promises from hanging if browser drops utterance end
+      const wordCount = (text || "").split(/\s+/).length;
+      const timeoutMs = Math.max(3000, (wordCount / 2.0) * 1000 + 3500);
+      safetyTimer = setTimeout(finish, timeoutMs);
+
+      // Keep speech active across Chrome's 15s pause limit
+      resumeInterval = setInterval(() => {
+        if (window.speechSynthesis?.speaking && window.speechSynthesis?.paused) {
+          window.speechSynthesis.resume();
+        }
+      }, 3000);
+
       setSubtitle(text);
-      window.speechSynthesis.speak(utterance);
+      try {
+        window.speechSynthesis.speak(utterance);
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+      } catch (err) {
+        console.warn("speechSynthesis.speak error:", err);
+        finish();
+      }
     });
   };
 
-  // BUG FIX: intro-phase condition was inverted. `isIntroPhase` starts
-  // `true`, but the original checked `if (!isIntroPhase)` to run the
-  // intro speech — that's the OPPOSITE of when it should run. It skipped
-  // the greeting entirely and jumped straight to asking questions.
   useEffect(() => {
     if (!voiceReady) return;
 
@@ -209,7 +264,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
         setIntroPhase(false);
       } else if (currentQuestion) {
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 600));
 
         if (currentIndex === questions.length - 1) {
           await speakText("Alright, this one might be a bit more challenging.");
@@ -217,7 +272,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
         await speakText(currentQuestion.question);
 
-        if (isMicOn) {
+        if (isMicOnRef.current) {
           startMic();
         }
       }
@@ -271,16 +326,43 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   useEffect(() => {
     const SpeechRecognitionClass =
       window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionClass) return;
+    if (!SpeechRecognitionClass) {
+      console.warn("SpeechRecognition not supported in this browser.");
+      return;
+    }
 
     const recognition = new SpeechRecognitionClass();
     recognition.lang = "en-US";
     recognition.continuous = true;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
 
     recognition.onresult = (event) => {
-      const transcript = event.results[event.results.length - 1][0].transcript;
-      setAnswer((prev) => prev + " " + transcript);
+      let finalChunk = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const item = event.results[i];
+        const text = item[0]?.transcript || "";
+        if (item.isFinal) {
+          finalChunk += " " + text.trim();
+        }
+      }
+
+      if (finalChunk.trim()) {
+        setAnswer((prev) => {
+          const trimmedPrev = prev.trim();
+          const cleanChunk = finalChunk.trim();
+          return trimmedPrev ? `${trimmedPrev} ${cleanChunk}` : cleanChunk;
+        });
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.warn("Speech recognition event error:", event.error);
+      if (event.error === "not-allowed") {
+        setSubmitError(
+          "Microphone permission is blocked. Please allow microphone access in your browser address bar."
+        );
+        setIsMicOn(false);
+      }
     };
 
     // Auto-restart recognition when browser stops due to silence or brief pauses
@@ -298,6 +380,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
     return () => {
       recognition.onend = null;
+      recognition.onerror = null;
       try {
         recognition.stop();
         recognition.abort();
@@ -308,12 +391,13 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   }, []);
 
   const toggleMic = () => {
-    if (isMicOn) {
-      stopMic();
-    } else {
+    const nextMic = !isMicOn;
+    setIsMicOn(nextMic);
+    if (nextMic) {
       startMic();
+    } else {
+      stopMic();
     }
-    setIsMicOn(!isMicOn);
   };
 
   const submitAnswer = async () => {
@@ -596,9 +680,24 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
           {!isIntroPhase && (
             <div className="mb-4">
-              <p className="text-xs font-semibold mb-1" style={{ color: "var(--indigo)" }}>
-                Question {currentIndex + 1} of {questions.length}
-              </p>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <p className="text-xs font-semibold" style={{ color: "var(--indigo)" }}>
+                  Question {currentIndex + 1} of {questions.length}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    speakText(
+                      isAnsweringFollowUp ? followUpQuestion : currentQuestion?.question
+                    )
+                  }
+                  title="Click to hear question read aloud"
+                  className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border border-indigo-200 text-indigo-600 bg-indigo-50/60 hover:bg-indigo-100 transition"
+                >
+                  <FaVolumeUp size={12} />
+                  <span>Hear Question</span>
+                </button>
+              </div>
               <div className="text-sm font-medium" style={{ color: "var(--ink)" }}>
                 {currentQuestion?.question}
               </div>
@@ -620,8 +719,8 @@ const Step2Interview = ({ interviewData, onFinish }) => {
           <textarea
             placeholder={
               isAnsweringFollowUp
-                ? "Type your follow-up answer here..."
-                : "Type your answer here..."
+                ? "Type or speak your follow-up answer here..."
+                : "Type or speak your answer here..."
             }
             onChange={(e) => setAnswer(e.target.value)}
             value={answer}
@@ -633,6 +732,13 @@ const Step2Interview = ({ interviewData, onFinish }) => {
           {/* Stage 1: answering the main question */}
           {!feedback && (
             <div className="mt-4">
+              {isMicOn && !isAIPlaying && (
+                <div className="flex items-center gap-2 mb-2 text-xs text-emerald-600 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                  <span>Microphone active — speaking will transcribe here, or you can type directly.</span>
+                </div>
+              )}
+
               {/* NEW: visible error banner - previously a failed/timed-out
                   submit just silently reverted the button with no
                   explanation, leaving the person confused about what

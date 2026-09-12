@@ -69,6 +69,6 @@ connectDb().then(() => {
 
     app.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
-        console.log(`CORS allowed origin: ${frontendUrl}`);
+        console.log("CORS allowed origins:", allowedOrigins);
     });
 });

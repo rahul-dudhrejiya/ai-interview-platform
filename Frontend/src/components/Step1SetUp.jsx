@@ -31,10 +31,13 @@ const Step1SetUp = ({ onStart }) => {
   const [jdText, setJdText] = useState("");
   const [jdFile, setJdFile] = useState(null);
   const [parsingJD, setParsingJD] = useState(false);
+  const [resumeError, setResumeError] = useState("");
+  const [jdError, setJdError] = useState("");
 
   const handleUploadResume = async () => {
     if (!resumeFile || analyzing) return;
     setAnalyzing(true);
+    setResumeError("");
 
     const formdata = new FormData();
     formdata.append("resume", resumeFile);
@@ -54,7 +57,11 @@ const Step1SetUp = ({ onStart }) => {
       setAnalysisDone(true);
       setAnalyzing(false);
     } catch (error) {
-      console.log(error);
+      console.error("Resume analysis error:", error);
+      const message =
+        error.response?.data?.message ||
+        "Failed to analyze resume. Please make sure the PDF has readable text or enter details manually.";
+      setResumeError(message);
       setAnalyzing(false);
     }
   };
@@ -63,6 +70,7 @@ const Step1SetUp = ({ onStart }) => {
   const handleUploadJD = async () => {
     if (!jdFile || parsingJD) return;
     setParsingJD(true);
+    setJdError("");
 
     const formdata = new FormData();
     formdata.append("jd", jdFile);
@@ -76,7 +84,8 @@ const Step1SetUp = ({ onStart }) => {
       setJdText(result.data.jdText || "");
       setParsingJD(false);
     } catch (error) {
-      console.log(error);
+      console.error("JD parse error:", error);
+      setJdError(error.response?.data?.message || "Failed to parse JD PDF.");
       setParsingJD(false);
     }
   };
@@ -258,7 +267,10 @@ const Step1SetUp = ({ onStart }) => {
                     type="file"
                     accept="application/pdf"
                     className="hidden"
-                    onChange={(e) => setJdFile(e.target.files[0])}
+                    onChange={(e) => {
+                      setJdFile(e.target.files[0]);
+                      setJdError("");
+                    }}
                   />
                 </label>
                 {jdFile && (
@@ -272,6 +284,11 @@ const Step1SetUp = ({ onStart }) => {
                   </button>
                 )}
               </div>
+              {jdError && (
+                <p className="mt-2 text-xs text-red-500 font-medium">
+                  {jdError}
+                </p>
+              )}
             </div>
 
             {!analysisDone && (
@@ -288,7 +305,10 @@ const Step1SetUp = ({ onStart }) => {
                   accept="application/pdf"
                   id="resumeUpload"
                   className="hidden"
-                  onChange={(e) => setResumeFile(e.target.files[0])}
+                  onChange={(e) => {
+                    setResumeFile(e.target.files[0]);
+                    setResumeError("");
+                  }}
                 />
 
                 <p className="text-sm" style={{ color: "#6B7280" }}>
@@ -308,6 +328,12 @@ const Step1SetUp = ({ onStart }) => {
                   >
                     {analyzing ? "Analyzing..." : "Analyze Resume"}
                   </motion.button>
+                )}
+
+                {resumeError && (
+                  <p className="mt-3 text-xs text-red-500 font-medium px-3 py-1.5 bg-red-50 rounded-lg">
+                    {resumeError}
+                  </p>
                 )}
               </motion.div>
             )}

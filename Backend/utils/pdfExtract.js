@@ -28,28 +28,30 @@ const fontsDir = path.join(
     "pdfjs-dist",
     "standard_fonts"
 );
-const STANDARD_FONT_DATA_URL = pathToFileURL(fontsDir).href + "/";
+const hasFonts = fs.existsSync(fontsDir);
+const STANDARD_FONT_DATA_URL = hasFonts ? pathToFileURL(fontsDir).href + "/" : undefined;
 
-// NEW (Feature: Custom Company JD Upload)
-// This logic used to live only inside analyzeResume(). Pulled it out into
-// a shared helper so the new JD-upload feature can reuse the exact same
-// PDF-parsing code instead of duplicating it — one bug fix here fixes
-// both resume parsing and JD parsing.
 export const extractTextFromPDF = async (filepath) => {
     const fileBuffer = await fs.promises.readFile(filepath);
     const uint8Array = new Uint8Array(fileBuffer);
 
-    const pdf = await pdfjsLib.getDocument({
+    const docParams = {
         data: uint8Array,
-        standardFontDataUrl: STANDARD_FONT_DATA_URL,
-    }).promise;
+    };
+    if (STANDARD_FONT_DATA_URL) {
+        docParams.standardFontDataUrl = STANDARD_FONT_DATA_URL;
+    }
+
+    const pdf = await pdfjsLib.getDocument(docParams).promise;
 
     let text = "";
 
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         const page = await pdf.getPage(pageNum);
         const content = await page.getTextContent();
-        const pageText = content.items.map((item) => item.str).join(" ");
+        const pageText = content.items
+            .map((item) => (item && typeof item.str === "string" ? item.str : ""))
+            .join(" ");
         text += pageText + "\n";
     }
 

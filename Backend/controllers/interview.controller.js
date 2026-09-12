@@ -19,18 +19,28 @@ const parseAiJson = (raw) => {
 };
 
 export const analyzeResume = async (req, res) => {
+    let filepath = null;
     try {
         if (!req.file) {
-            return res.status(400).json({ message: "Resume required" });
+            return res.status(400).json({ message: "Resume file is required." });
         }
-        const filepath = req.file.path;
+        filepath = req.file.path;
 
-        // BUG FIX (refactor): this PDF-parsing loop used to be inline here
-        // (and had a broken nested .map() call: `item.map(item => item.str)`,
-        // which isn't valid — text-content items don't have a .map method).
-        // Extracted into extractTextFromPDF() so the same fixed logic can
-        // be reused for JD parsing below, instead of copy-pasting it.
-        const resumeText = await extractTextFromPDF(filepath);
+        let resumeText = "";
+        try {
+            resumeText = await extractTextFromPDF(filepath);
+        } catch (pdfErr) {
+            console.error("PDF extraction error:", pdfErr);
+            return res.status(400).json({
+                message: "Unable to parse this PDF file. Please ensure it is a valid, readable PDF.",
+            });
+        }
+
+        if (!resumeText || resumeText.length < 20) {
+            return res.status(400).json({
+                message: "No readable text found in this PDF. If this is a scanned image or photo, please upload a text-based PDF.",
+            });
+        }
 
         const messages = [
             {
@@ -50,62 +60,67 @@ export const analyzeResume = async (req, res) => {
             },
             {
                 role: "user",
-                content: resumeText,
+                content: resumeText.slice(0, 6000),
             },
         ];
 
         const aiResponse = await askAi(messages);
         const parsed = parseAiJson(aiResponse);
 
-        fs.unlinkSync(filepath);
-
         res.json({
-            role: parsed.role,
-            experience: parsed.experience,
-            projects: parsed.projects,
-            skills: parsed.skills,
+            role: parsed.role || "",
+            experience: parsed.experience || "",
+            projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+            skills: Array.isArray(parsed.skills) ? parsed.skills : [],
             resumeText,
         });
     } catch (error) {
-        console.error(error);
-
-        if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
+        console.error("analyzeResume error:", error);
+        res.status(500).json({ message: error.message || "Failed to analyze resume." });
+    } finally {
+        if (filepath && fs.existsSync(filepath)) {
+            try {
+                fs.unlinkSync(filepath);
+            } catch {
+                /* ignore */
+            }
         }
-
-        res.status(500).json({ message: error.message });
     }
 };
 
 // NEW (Feature: Custom Company JD Upload)
-// Lets the candidate upload a company's job description as a PDF and get
-// back the extracted plain text, same pattern as analyzeResume. No AI
-// call needed here — the raw JD text itself is what gets fed into the
-// question-generation prompt later.
 export const parseJD = async (req, res) => {
+    let filepath = null;
     try {
         if (!req.file) {
-            return res.status(400).json({ message: "Job description file required" });
+            return res.status(400).json({ message: "Job description file required." });
         }
-        const filepath = req.file.path;
+        filepath = req.file.path;
 
-        const jdText = await extractTextFromPDF(filepath);
+        let jdText = "";
+        try {
+            jdText = await extractTextFromPDF(filepath);
+        } catch (pdfErr) {
+            console.error("JD PDF extraction error:", pdfErr);
+            return res.status(400).json({
+                message: "Unable to parse the Job Description PDF.",
+            });
+        }
 
-        fs.unlinkSync(filepath);
-
-        // Cap length so an unusually long JD PDF doesn't blow up prompt
-        // size/cost later in generateQuestion.
-        const trimmedJD = jdText.slice(0, 4000);
+        const trimmedJD = (jdText || "").slice(0, 4000);
 
         res.json({ jdText: trimmedJD });
     } catch (error) {
-        console.error(error);
-
-        if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
+        console.error("parseJD error:", error);
+        res.status(500).json({ message: error.message || "Failed to parse job description." });
+    } finally {
+        if (filepath && fs.existsSync(filepath)) {
+            try {
+                fs.unlinkSync(filepath);
+            } catch {
+                /* ignore */
+            }
         }
-
-        res.status(500).json({ message: error.message });
     }
 };
 
