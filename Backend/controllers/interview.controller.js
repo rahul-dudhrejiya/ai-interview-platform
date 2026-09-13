@@ -1,4 +1,5 @@
 import fs from "fs";
+import axios from "axios";
 import { askAi } from "../services/openRouter.service.js";
 import User from "../models/user.model.js";
 import Interview from "../models/interview.model.js";
@@ -1064,5 +1065,62 @@ export const getLeaderboard = async (req, res) => {
         return res
             .status(500)
             .json({ message: `Failed to compute leaderboard: ${error}` });
+    }
+};
+
+// NEW: Whisper Audio Transcription Endpoint
+// Transcribes raw audio recordings via Groq Whisper API (whisper-large-v3-turbo).
+// Provides an alternative voice input method that works across all browsers and devices.
+export const transcribeAudio = async (req, res) => {
+    let filePath = null;
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: "No audio file provided." });
+        }
+
+        filePath = req.file.path;
+        const fileBuffer = fs.readFileSync(filePath);
+
+        // Delete temporary file from disk right away
+        try {
+            fs.unlinkSync(filePath);
+            filePath = null;
+        } catch {
+            /* no-op */
+        }
+
+        const blob = new Blob([fileBuffer], { type: req.file.mimetype || "audio/webm" });
+        const formData = new FormData();
+        formData.append("file", blob, req.file.originalname || "audio.webm");
+        formData.append("model", "whisper-large-v3-turbo");
+        formData.append("response_format", "json");
+
+        const response = await axios.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            formData,
+            {
+                headers: {
+                    Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+                },
+                timeout: 30000,
+            }
+        );
+
+        const transcribedText = response.data?.text || "";
+        return res.status(200).json({ text: transcribedText.trim() });
+    } catch (error) {
+        if (filePath && fs.existsSync(filePath)) {
+            try {
+                fs.unlinkSync(filePath);
+            } catch {
+                /* no-op */
+            }
+        }
+        console.error("Whisper transcription error:", error.response?.data || error.message);
+        return res.status(500).json({
+            message:
+                error.response?.data?.error?.message ||
+                "Failed to transcribe audio. Please try speaking again.",
+        });
     }
 };

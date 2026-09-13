@@ -14,9 +14,18 @@ import {
     parseJD,
     submitAnswer,
     submitFollowUp,
+    transcribeAudio,
 } from "../controllers/interview.controller.js";
 
 const interViewRouter = express.Router();
+
+// NEW: Whisper Audio Transcription Endpoint
+interViewRouter.post(
+    "/transcribe-audio",
+    isAuth,
+    upload.single("audio"),
+    transcribeAudio
+);
 
 interViewRouter.post(
     "/resume",

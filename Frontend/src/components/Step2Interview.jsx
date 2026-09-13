@@ -5,7 +5,7 @@ import maleVideo from "../assets/videos/male-ai.mp4";
 import femaleVideo from "../assets/videos/female-ai.mp4";
 import Timer from "./Timer";
 import { motion } from "motion/react";
-import { FaMicrophone, FaMicrophoneSlash, FaVolumeUp } from "react-icons/fa";
+import { FaMicrophone, FaMicrophoneSlash, FaVolumeUp, FaStop, FaCircle } from "react-icons/fa";
 import axios from "axios";
 // BUG FIX: import path was '.../App' (invalid) -> '../App'
 import { ServerUrl } from "../utils/constants";
@@ -19,19 +19,27 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
   const [isMicOn, setIsMicOn] = useState(true);
   const isMicOnRef = useRef(isMicOn);
-  const shouldListenRef = useRef(false);
+  const shouldListenRef = useRef(true);
+  const [isMicActive, setIsMicActive] = useState(false);
 
   const recognitionInstanceRef = useRef(null);
   const isListeningActiveRef = useRef(false);
-  const isStartingRef = useRef(false);
   const restartTimerRef = useRef(null);
-  const consecutiveErrorsRef = useRef(0);
 
   const [isAIPlaying, setIsAIPlaying] = useState(false);
   const isAIPlayingRef = useRef(isAIPlaying);
 
   const [interimText, setInterimText] = useState("");
   const interimTextRef = useRef("");
+
+  // NEW: Whisper Audio Recorder States ("The Other Way" for 100% reliable voice input)
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const recordingTimerRef = useRef(null);
+  const audioStreamRef = useRef(null);
 
   const [micLang, setMicLang] = useState(() => {
     return (
@@ -179,167 +187,127 @@ const Step2Interview = ({ interviewData, onFinish }) => {
     return answerRef.current;
   };
 
-  const safeStartRecognition = () => {
-    if (!shouldListenRef.current || !isMicOnRef.current || isAIPlayingRef.current) {
-      return;
-    }
-    if (isListeningActiveRef.current || isStartingRef.current) {
-      return;
-    }
-
+  // Dedicated single-instance Web Speech Recognition
+  useEffect(() => {
     const SpeechRecognitionClass =
       typeof window !== "undefined"
         ? window.SpeechRecognition || window.webkitSpeechRecognition
         : null;
 
     if (!SpeechRecognitionClass) {
-      console.warn("SpeechRecognition not supported in this browser.");
+      console.warn("Web SpeechRecognition not supported in this browser. MediaRecorder Whisper will be used.");
       return;
     }
 
-    // Clean up any old instance
-    if (recognitionInstanceRef.current) {
-      try {
-        recognitionInstanceRef.current.onresult = null;
-        recognitionInstanceRef.current.onend = null;
-        recognitionInstanceRef.current.onerror = null;
-        recognitionInstanceRef.current.onstart = null;
-        recognitionInstanceRef.current.abort();
-      } catch {
-        /* no-op */
+    const rec = new SpeechRecognitionClass();
+    rec.lang = micLangRef.current || "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+
+    rec.onstart = () => {
+      isListeningActiveRef.current = true;
+      setIsMicActive(true);
+    };
+
+    rec.onresult = (event) => {
+      let finalChunk = "";
+      let interimChunk = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const item = event.results[i];
+        const text = item[0]?.transcript || "";
+        if (item.isFinal) {
+          finalChunk += " " + text.trim();
+        } else {
+          interimChunk += " " + text.trim();
+        }
       }
-      recognitionInstanceRef.current = null;
-    }
 
-    try {
-      isStartingRef.current = true;
-      const rec = new SpeechRecognitionClass();
-      rec.lang = micLangRef.current || "en-US";
-      rec.continuous = true;
-      rec.interimResults = true;
+      if (finalChunk.trim()) {
+        const cleanFinal = finalChunk.trim();
+        const prev = answerRef.current.trim();
+        const updated = prev ? `${prev} ${cleanFinal}` : cleanFinal;
+        answerRef.current = updated;
+        setAnswer(updated);
+      }
 
-      rec.onstart = () => {
-        isListeningActiveRef.current = true;
-        isStartingRef.current = false;
-        consecutiveErrorsRef.current = 0;
-      };
+      const cleanInterim = interimChunk.trim();
+      interimTextRef.current = cleanInterim;
+      setInterimText(cleanInterim);
+    };
 
-      rec.onresult = (event) => {
-        let finalChunk = "";
-        let interimChunk = "";
+    rec.onerror = (event) => {
+      if (event.error === "no-speech") return;
+      console.warn("Speech recognition notice:", event.error);
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        setSubmitError(
+          "Browser live dictation was blocked. You can still use the 'Record Answer (AI Whisper)' button below!"
+        );
+        setIsMicOn(false);
+        isMicOnRef.current = false;
+        shouldListenRef.current = false;
+      }
+    };
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const item = event.results[i];
-          const text = item[0]?.transcript || "";
-          if (item.isFinal) {
-            finalChunk += " " + text.trim();
-          } else {
-            interimChunk += " " + text.trim();
-          }
-        }
-
-        if (finalChunk.trim()) {
-          const cleanFinal = finalChunk.trim();
-          const prev = answerRef.current.trim();
-          const updated = prev ? `${prev} ${cleanFinal}` : cleanFinal;
-          answerRef.current = updated;
-          setAnswer(updated);
-        }
-
-        const cleanInterim = interimChunk.trim();
-        interimTextRef.current = cleanInterim;
-        setInterimText(cleanInterim);
-      };
-
-      rec.onerror = (event) => {
-        if (event.error === "no-speech") {
-          // Normal pause in speaking, do nothing
-          return;
-        }
-
-        console.warn("Speech recognition notice:", event.error);
-
-        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-          setSubmitError(
-            "Microphone permission is blocked. Please allow microphone access in your browser address bar."
-          );
-          setIsMicOn(false);
-          isMicOnRef.current = false;
-          shouldListenRef.current = false;
-          isListeningActiveRef.current = false;
-          isStartingRef.current = false;
-          return;
-        }
-
-        if (event.error === "network") {
-          consecutiveErrorsRef.current += 1;
-        }
-      };
-
-      rec.onend = () => {
-        isListeningActiveRef.current = false;
-        isStartingRef.current = false;
-
-        // CRITICAL: Flush any pending speech into answer immediately so words NEVER vanish!
-        flushInterim();
-
-        // Auto-restart if user still wants mic on
-        if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
-          clearTimeout(restartTimerRef.current);
-          const delay =
-            consecutiveErrorsRef.current > 0
-              ? Math.min(1500, 250 * Math.pow(1.5, consecutiveErrorsRef.current))
-              : 150;
-
-          restartTimerRef.current = setTimeout(() => {
-            if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
-              safeStartRecognition();
-            }
-          }, delay);
-        }
-      };
-
-      recognitionInstanceRef.current = rec;
-      rec.start();
-    } catch (err) {
-      isStartingRef.current = false;
+    rec.onend = () => {
       isListeningActiveRef.current = false;
-      console.warn("Could not start speech recognition:", err);
+      setIsMicActive(false);
+      flushInterim();
+
+      // Auto-restart if user still wants mic on and AI is not speaking
       if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
         clearTimeout(restartTimerRef.current);
         restartTimerRef.current = setTimeout(() => {
-          if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current) {
-            safeStartRecognition();
+          if (shouldListenRef.current && isMicOnRef.current && !isAIPlayingRef.current && !isListeningActiveRef.current) {
+            try {
+              rec.start();
+            } catch {
+              /* ignore if already active */
+            }
           }
-        }, 400);
+        }, 200);
       }
-    }
-  };
+    };
+
+    recognitionInstanceRef.current = rec;
+
+    return () => {
+      clearTimeout(restartTimerRef.current);
+      rec.onresult = null;
+      rec.onend = null;
+      rec.onerror = null;
+      rec.onstart = null;
+      try {
+        rec.stop();
+        rec.abort();
+      } catch {
+        /* no-op */
+      }
+    };
+  }, []);
 
   const startMic = () => {
     shouldListenRef.current = true;
-    safeStartRecognition();
+    if (!recognitionInstanceRef.current) return;
+    if (isListeningActiveRef.current || isAIPlayingRef.current) return;
+    try {
+      recognitionInstanceRef.current.start();
+    } catch {
+      /* ignore if already running */
+    }
   };
 
   const stopMic = () => {
     shouldListenRef.current = false;
     clearTimeout(restartTimerRef.current);
     flushInterim();
-    isStartingRef.current = false;
-    isListeningActiveRef.current = false;
-
-    if (recognitionInstanceRef.current) {
+    setIsMicActive(false);
+    if (recognitionInstanceRef.current && isListeningActiveRef.current) {
       try {
-        recognitionInstanceRef.current.onresult = null;
-        recognitionInstanceRef.current.onend = null;
-        recognitionInstanceRef.current.onerror = null;
-        recognitionInstanceRef.current.onstart = null;
         recognitionInstanceRef.current.stop();
-        recognitionInstanceRef.current.abort();
       } catch {
         /* no-op */
       }
-      recognitionInstanceRef.current = null;
     }
   };
 
@@ -358,13 +326,126 @@ const Step2Interview = ({ interviewData, onFinish }) => {
     setMicLang(newLang);
     micLangRef.current = newLang;
     localStorage.setItem("mic_lang", newLang);
-    if (isMicOnRef.current && shouldListenRef.current) {
-      stopMic();
-      setTimeout(() => {
-        if (isMicOnRef.current) {
-          startMic();
+    if (recognitionInstanceRef.current) {
+      try {
+        recognitionInstanceRef.current.lang = newLang;
+      } catch {
+        /* no-op */
+      }
+    }
+  };
+
+  // -------------------------------------------------------------
+  // NEW: Whisper Audio Recorder ("The Other Way" requested by user)
+  // Direct microphone recording sent to Groq Whisper AI
+  // Works on ALL browsers, even if Web Speech API is blocked or offline!
+  // -------------------------------------------------------------
+  const startAudioRecording = async () => {
+    try {
+      stopMic(); // pause live dictation so audio streams don't clash
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : MediaRecorder.isTypeSupported("audio/mp4")
+        ? "audio/mp4"
+        : "";
+
+      const options = mimeType ? { mimeType } : {};
+      const mediaRecorder = new MediaRecorder(stream, options);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
         }
-      }, 100);
+      };
+
+      mediaRecorder.onstop = async () => {
+        clearInterval(recordingTimerRef.current);
+        setRecordingSeconds(0);
+        setIsRecordingAudio(false);
+
+        // Stop microphone hardware capture
+        if (audioStreamRef.current) {
+          audioStreamRef.current.getTracks().forEach((track) => track.stop());
+          audioStreamRef.current = null;
+        }
+
+        const actualMime = mediaRecorder.mimeType || "audio/webm";
+        const audioBlob = new Blob(audioChunksRef.current, { type: actualMime });
+
+        if (audioBlob.size < 500) {
+          return; // Recording was essentially empty
+        }
+
+        setIsTranscribing(true);
+        setSubmitError("");
+
+        try {
+          const formData = new FormData();
+          formData.append("audio", audioBlob, "answer.webm");
+
+          const response = await axios.post(
+            ServerUrl + "/api/interview/transcribe-audio",
+            formData,
+            {
+              headers: { "Content-Type": "multipart/form-data" },
+              withCredentials: true,
+              timeout: 35000,
+            }
+          );
+
+          if (response.data?.text) {
+            const transcribed = response.data.text.trim();
+            setAnswer((prev) => {
+              const p = prev.trim();
+              const updated = p ? `${p} ${transcribed}` : transcribed;
+              answerRef.current = updated;
+              return updated;
+            });
+          }
+        } catch (err) {
+          console.error("Whisper transcription failed:", err);
+          setSubmitError(
+            err.response?.data?.message ||
+              "Failed to transcribe audio. Please try again or type directly into the box."
+          );
+        } finally {
+          setIsTranscribing(false);
+          if (isMicOnRef.current && !isAIPlayingRef.current) {
+            startMic();
+          }
+        }
+      };
+
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.start(250);
+      setIsRecordingAudio(true);
+      setRecordingSeconds(0);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (err) {
+      console.error("Microphone recording access error:", err);
+      setSubmitError(
+        "Microphone access was denied. Please allow microphone permission in your browser address bar."
+      );
+    }
+  };
+
+  const stopAudioRecording = () => {
+    if (mediaRecorderRef.current && isRecordingAudio) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (err) {
+        console.warn("MediaRecorder stop notice:", err);
+      }
     }
   };
 
@@ -396,6 +477,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
           }
         }
         setIsAIPlaying(false);
+        isAIPlayingRef.current = false;
 
         if (isMicOnRef.current) {
           startMic();
@@ -424,6 +506,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
       utterance.onstart = () => {
         setIsAIPlaying(true);
+        isAIPlayingRef.current = true;
         stopMic();
         videoRef.current?.play().catch(() => {});
       };
@@ -536,6 +619,9 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   const submitAnswer = async () => {
     if (isSubmitting) return;
 
+    if (isRecordingAudio) {
+      stopAudioRecording();
+    }
     const finalAnswer = flushInterim();
     stopMic();
     setIsSubmitting(true);
@@ -591,6 +677,9 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   };
 
   const handleNext = async () => {
+    if (isRecordingAudio) {
+      stopAudioRecording();
+    }
     answerRef.current = "";
     interimTextRef.current = "";
     setAnswer("");
@@ -636,6 +725,9 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   // Called when the candidate chooses to answer the AI's probing
   // follow-up instead of skipping straight to the next question.
   const startFollowUp = async () => {
+    if (isRecordingAudio) {
+      stopAudioRecording();
+    }
     answerRef.current = "";
     interimTextRef.current = "";
     setAnswer("");
@@ -647,6 +739,9 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
   const submitFollowUpAnswer = async () => {
     if (isSubmittingFollowUp) return;
+    if (isRecordingAudio) {
+      stopAudioRecording();
+    }
     const finalAnswer = flushInterim();
     stopMic();
     setIsSubmittingFollowUp(true);
@@ -686,6 +781,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
 
   const finishInterview = async () => {
     stopMic();
+    stopAudioRecording();
     setIsMicOn(false);
     isMicOnRef.current = false;
     try {
@@ -726,6 +822,7 @@ const Step2Interview = ({ interviewData, onFinish }) => {
   useEffect(() => {
     return () => {
       stopMic();
+      stopAudioRecording();
       if (typeof window !== "undefined" && window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
@@ -892,14 +989,37 @@ const Step2Interview = ({ interviewData, onFinish }) => {
           {/* Stage 1: answering the main question */}
           {!feedback && (
             <div className="mt-4">
-              {isMicOn && !isAIPlaying && (
-                <div className="flex items-center gap-2 mb-2 text-xs text-emerald-600 font-medium">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-                  <span>Microphone active — speaks will write immediately, or you can type.</span>
+              {/* Active Voice Status Banner */}
+              {isRecordingAudio ? (
+                <div className="flex items-center justify-between gap-2 mb-2.5 px-3 py-2 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-semibold animate-pulse">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-ping shrink-0"></span>
+                    <span>
+                      Recording Voice: {Math.floor(recordingSeconds / 60)}:
+                      {String(recordingSeconds % 60).padStart(2, "0")}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={stopAudioRecording}
+                    className="px-2.5 py-1 bg-rose-600 text-white rounded-lg text-xs font-bold hover:bg-rose-700 transition"
+                  >
+                    Finish & Convert
+                  </button>
                 </div>
-              )}
+              ) : isTranscribing ? (
+                <div className="flex items-center gap-2 mb-2.5 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-700 font-semibold animate-pulse">
+                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 animate-ping shrink-0"></span>
+                  <span>Transcribing with Groq Whisper AI...</span>
+                </div>
+              ) : isMicOn && !isAIPlaying ? (
+                <div className="flex items-center gap-2 mb-2.5 text-xs text-emerald-600 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                  <span>Live dictation active — speak to type, or use "Record (Whisper AI)" below.</span>
+                </div>
+              ) : null}
 
-              {/* NEW: visible error banner */}
+              {/* Error banner */}
               {submitError && (
                 <div
                   className="text-xs rounded-lg px-3 py-2 mb-3"
@@ -908,25 +1028,61 @@ const Step2Interview = ({ interviewData, onFinish }) => {
                   {submitError}
                 </div>
               )}
-              <div className="flex items-center gap-3">
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                {/* 1. Live Dictation Toggle */}
                 <motion.button
+                  type="button"
                   onClick={toggleMic}
                   whileTap={{ scale: 0.95 }}
-                  title={isMicOn ? "Mute Microphone" : "Unmute Microphone"}
-                  className="w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition"
+                  title={isMicOn ? "Mute Live Dictation" : "Turn On Live Dictation"}
+                  className="h-11 px-3 rounded-xl flex items-center gap-2 shrink-0 transition border text-xs font-semibold"
                   style={{
                     backgroundColor: isMicOn ? "rgba(59,79,224,0.12)" : "var(--surface-muted)",
+                    borderColor: isMicOn ? "rgba(59,79,224,0.3)" : "var(--border)",
                     color: isMicOn ? "var(--indigo)" : "#9CA3AF",
-                    boxShadow: isMicOn ? "0 0 0 2px rgba(59,79,224,0.3)" : "none",
                   }}
                 >
-                  {isMicOn ? <FaMicrophone size={18} /> : <FaMicrophoneSlash size={18} />}
+                  {isMicOn ? <FaMicrophone size={15} /> : <FaMicrophoneSlash size={15} />}
+                  <span className="hidden sm:inline">{isMicOn ? "Live Dictation" : "Mic Muted"}</span>
+                  {isMicOn && isMicActive && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                  )}
                 </motion.button>
 
+                {/* 2. Direct Audio Recorder (Whisper AI) - "The Other Way" */}
+                {!isRecordingAudio ? (
+                  <motion.button
+                    type="button"
+                    onClick={startAudioRecording}
+                    disabled={isTranscribing || isAIPlaying}
+                    whileTap={{ scale: 0.97 }}
+                    title="Direct microphone recording transcribed by Groq Whisper AI (Works on all browsers)"
+                    className="flex items-center gap-2 h-11 px-3.5 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 transition disabled:opacity-50 shrink-0 shadow-sm"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+                    <span>{isTranscribing ? "Transcribing..." : "🎙️ Record (Whisper AI)"}</span>
+                  </motion.button>
+                ) : (
+                  <motion.button
+                    type="button"
+                    onClick={stopAudioRecording}
+                    whileTap={{ scale: 0.97 }}
+                    className="flex items-center gap-2 h-11 px-3.5 rounded-xl text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800 transition shrink-0 animate-pulse shadow-md"
+                  >
+                    <FaStop size={12} />
+                    <span>
+                      Stop ({Math.floor(recordingSeconds / 60)}:
+                      {String(recordingSeconds % 60).padStart(2, "0")})
+                    </span>
+                  </motion.button>
+                )}
+
+                {/* 3. Accent selector */}
                 <select
                   value={micLang}
                   onChange={(e) => handleLangChange(e.target.value)}
-                  className="text-xs border rounded-xl px-2.5 py-3 outline-none font-medium bg-white cursor-pointer"
+                  className="h-11 text-xs border rounded-xl px-2.5 outline-none font-medium bg-white cursor-pointer"
                   style={{ borderColor: "var(--border)", color: "var(--ink)" }}
                   title="Speech Accent / Language"
                 >
@@ -935,11 +1091,12 @@ const Step2Interview = ({ interviewData, onFinish }) => {
                   <option value="en-GB">English (UK)</option>
                 </select>
 
+                {/* 4. Submit Answer */}
                 <motion.button
                   onClick={submitAnswer}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || isTranscribing}
                   whileTap={{ scale: 0.98 }}
-                  className="flex-1 text-white font-semibold rounded-xl py-3 disabled:opacity-50"
+                  className="flex-1 min-w-[120px] h-11 text-white font-semibold rounded-xl py-2.5 disabled:opacity-50 text-xs sm:text-sm"
                   style={{ backgroundColor: "var(--indigo)" }}
                 >
                   {isSubmitting ? "Submitting..." : "Submit Answer"}
@@ -994,6 +1151,36 @@ const Step2Interview = ({ interviewData, onFinish }) => {
           {/* Stage 3: actively answering the follow-up */}
           {isAnsweringFollowUp && !followUpFeedback && (
             <div className="mt-4">
+              {/* Active Voice Status Banner */}
+              {isRecordingAudio ? (
+                <div className="flex items-center justify-between gap-2 mb-2.5 px-3 py-2 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-semibold animate-pulse">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-ping shrink-0"></span>
+                    <span>
+                      Recording Follow-up Voice: {Math.floor(recordingSeconds / 60)}:
+                      {String(recordingSeconds % 60).padStart(2, "0")}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={stopAudioRecording}
+                    className="px-2.5 py-1 bg-rose-600 text-white rounded-lg text-xs font-bold hover:bg-rose-700 transition"
+                  >
+                    Finish & Convert
+                  </button>
+                </div>
+              ) : isTranscribing ? (
+                <div className="flex items-center gap-2 mb-2.5 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-700 font-semibold animate-pulse">
+                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 animate-ping shrink-0"></span>
+                  <span>Transcribing with Groq Whisper AI...</span>
+                </div>
+              ) : isMicOn && !isAIPlaying ? (
+                <div className="flex items-center gap-2 mb-2.5 text-xs text-emerald-600 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                  <span>Live dictation active — speak to type, or use "Record (Whisper AI)" below.</span>
+                </div>
+              ) : null}
+
               {submitError && (
                 <div
                   className="text-xs rounded-lg px-3 py-2 mb-3"
@@ -1002,25 +1189,61 @@ const Step2Interview = ({ interviewData, onFinish }) => {
                   {submitError}
                 </div>
               )}
-              <div className="flex items-center gap-3">
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                {/* 1. Live Dictation Toggle */}
                 <motion.button
+                  type="button"
                   onClick={toggleMic}
                   whileTap={{ scale: 0.95 }}
-                  title={isMicOn ? "Mute Microphone" : "Unmute Microphone"}
-                  className="w-12 h-12 rounded-full flex items-center justify-center shrink-0"
+                  title={isMicOn ? "Mute Live Dictation" : "Turn On Live Dictation"}
+                  className="h-11 px-3 rounded-xl flex items-center gap-2 shrink-0 transition border text-xs font-semibold"
                   style={{
                     backgroundColor: isMicOn ? "rgba(59,79,224,0.12)" : "var(--surface-muted)",
+                    borderColor: isMicOn ? "rgba(59,79,224,0.3)" : "var(--border)",
                     color: isMicOn ? "var(--indigo)" : "#9CA3AF",
-                    boxShadow: isMicOn ? "0 0 0 2px rgba(59,79,224,0.3)" : "none",
                   }}
                 >
-                  {isMicOn ? <FaMicrophone size={18} /> : <FaMicrophoneSlash size={18} />}
+                  {isMicOn ? <FaMicrophone size={15} /> : <FaMicrophoneSlash size={15} />}
+                  <span className="hidden sm:inline">{isMicOn ? "Live Dictation" : "Mic Muted"}</span>
+                  {isMicOn && isMicActive && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                  )}
                 </motion.button>
 
+                {/* 2. Direct Audio Recorder (Whisper AI) - "The Other Way" */}
+                {!isRecordingAudio ? (
+                  <motion.button
+                    type="button"
+                    onClick={startAudioRecording}
+                    disabled={isTranscribing || isAIPlaying}
+                    whileTap={{ scale: 0.97 }}
+                    title="Direct microphone recording transcribed by Groq Whisper AI (Works on all browsers)"
+                    className="flex items-center gap-2 h-11 px-3.5 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 transition disabled:opacity-50 shrink-0 shadow-sm"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+                    <span>{isTranscribing ? "Transcribing..." : "🎙️ Record (Whisper AI)"}</span>
+                  </motion.button>
+                ) : (
+                  <motion.button
+                    type="button"
+                    onClick={stopAudioRecording}
+                    whileTap={{ scale: 0.97 }}
+                    className="flex items-center gap-2 h-11 px-3.5 rounded-xl text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800 transition shrink-0 animate-pulse shadow-md"
+                  >
+                    <FaStop size={12} />
+                    <span>
+                      Stop ({Math.floor(recordingSeconds / 60)}:
+                      {String(recordingSeconds % 60).padStart(2, "0")})
+                    </span>
+                  </motion.button>
+                )}
+
+                {/* 3. Accent selector */}
                 <select
                   value={micLang}
                   onChange={(e) => handleLangChange(e.target.value)}
-                  className="text-xs border rounded-xl px-2.5 py-3 outline-none font-medium bg-white cursor-pointer"
+                  className="h-11 text-xs border rounded-xl px-2.5 outline-none font-medium bg-white cursor-pointer"
                   style={{ borderColor: "var(--border)", color: "var(--ink)" }}
                   title="Speech Accent / Language"
                 >
@@ -1029,14 +1252,15 @@ const Step2Interview = ({ interviewData, onFinish }) => {
                   <option value="en-GB">English (UK)</option>
                 </select>
 
+                {/* 4. Submit Follow-up */}
                 <motion.button
                   onClick={submitFollowUpAnswer}
-                  disabled={isSubmittingFollowUp}
+                  disabled={isSubmittingFollowUp || isTranscribing}
                   whileTap={{ scale: 0.98 }}
-                  className="flex-1 text-white font-semibold rounded-xl py-3 disabled:opacity-50"
+                  className="flex-1 min-w-[120px] h-11 text-white font-semibold rounded-xl py-2.5 disabled:opacity-50 text-xs sm:text-sm"
                   style={{ backgroundColor: "var(--indigo)" }}
                 >
-                  {isSubmittingFollowUp ? "Submitting..." : "Submit Follow-up Answer"}
+                  {isSubmittingFollowUp ? "Submitting..." : "Submit Follow-up"}
                 </motion.button>
               </div>
             </div>
